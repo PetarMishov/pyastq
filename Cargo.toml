@@ -1,0 +1,13 @@
+[package]
+name = "py_ast"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "past"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5.40", features = ["derive"] }
+tree-sitter = "0.26.9"
+tree-sitter-python = "0.25.0"
