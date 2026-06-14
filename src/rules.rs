@@ -461,7 +461,7 @@ mod tests {
         assert_eq!(explicit.exclude, ["generated/**"]);
 
         let (discovered_path, discovered) = discover_rules(&nested).unwrap();
-        assert_eq!(discovered_path, pyproject);
+        assert_eq!(discovered_path, pyproject.canonicalize().unwrap());
         assert_eq!(discovered.rules[0].id, "no-eval");
 
         std::fs::remove_dir_all(directory).unwrap();

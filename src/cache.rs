@@ -95,6 +95,13 @@ impl SearchCache {
         let temporary = self.path.with_extension("json.tmp");
         std::fs::write(&temporary, source)
             .map_err(|error| format!("could not write {}: {error}", temporary.display()))?;
+
+        #[cfg(windows)]
+        if self.path.exists() {
+            std::fs::remove_file(&self.path)
+                .map_err(|error| format!("could not replace {}: {error}", self.path.display()))?;
+        }
+
         std::fs::rename(&temporary, &self.path)
             .map_err(|error| format!("could not replace {}: {error}", self.path.display()))
     }
