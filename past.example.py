@@ -5,14 +5,23 @@ that should remain clean. It is meant to be analyzed, not executed.
 """
 
 import ast
+import hashlib
 import json
+import logging
+import os
+import pdb
+import pickle
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from typing import Any
 
 import requests
+import yaml
 
 
 DEFAULT_TIMEOUT = 10
+logger = logging.getLogger(__name__)
 
 
 def parse_json_document(value: str) -> Any:
@@ -125,3 +134,42 @@ class Parser:
         """Compliant despite containing the substring 'eval' in a local name."""
         evaluated_default = {"value": value}
         return evaluated_default
+
+
+def execute_dynamic_source(source: str) -> None:
+    """Violation: dynamic code execution is prohibited."""
+    exec(source)
+
+
+def run_shell_command(command: str) -> None:
+    """Two command-execution violations."""
+    os.system(command)
+    subprocess.run(command, shell=True, check=True)
+
+
+def decode_legacy_payload(payload: bytes) -> Any:
+    """Violation: pickle can execute code while deserializing."""
+    return pickle.loads(payload)
+
+
+def parse_yaml_document(document: str) -> Any:
+    """Violation: yaml.load has no explicit Loader."""
+    return yaml.load(document)
+
+
+def allocate_temporary_name() -> str:
+    """Violation: mktemp has a race between name creation and use."""
+    return tempfile.mktemp()
+
+
+def legacy_digests(value: bytes) -> tuple[str, str]:
+    """Two weak-hash violations."""
+    return hashlib.md5(value).hexdigest(), hashlib.sha1(value).hexdigest()
+
+
+def debug_user(user_id: int) -> None:
+    """Debugger and production-output violations."""
+    print(f"debugging user {user_id}")
+    logger.warn("interactive debugging enabled")
+    pdb.set_trace()
+    breakpoint()

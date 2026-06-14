@@ -4,7 +4,7 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::query::parse_query;
 use crate::report::{OutputFormat, print_findings};
-use crate::rules::{check, load_rules, test_rules};
+use crate::rules::{check, discover_rules, load_rules, test_rules};
 use crate::search::{SearchContext, SearchOptions, search_path};
 
 const EXIT_OK: i32 = 0;
@@ -35,20 +35,20 @@ enum Command {
         #[command(flatten)]
         output: OutputArgs,
     },
-    /// Run all rules from a TOML rule file.
+    /// Run configured rules, discovering [tool.past] when --rules is omitted.
     Check {
         path: PathBuf,
         #[arg(long, short = 'r')]
-        rules: PathBuf,
+        rules: Option<PathBuf>,
         #[command(flatten)]
         search: SearchArgs,
         #[command(flatten)]
         output: OutputArgs,
     },
-    /// Run valid and invalid examples embedded in a rule file.
+    /// Test configured valid and invalid rule examples.
     TestRules {
         #[arg(long, short = 'r')]
-        rules: PathBuf,
+        rules: Option<PathBuf>,
     },
 }
 
@@ -114,7 +114,7 @@ fn execute(cli: Cli) -> Result<i32, String> {
                 },
             )?;
             if !output.quiet {
-                print_findings(&findings, output.format)?;
+                print_findings(&findings, output.format, &path)?;
             }
             Ok(if fail_on_match && !findings.is_empty() {
                 EXIT_FINDINGS
@@ -128,10 +128,13 @@ fn execute(cli: Cli) -> Result<i32, String> {
             search,
             output,
         } => {
-            let rule_file = load_rules(&rules)?;
+            let rule_file = match rules {
+                Some(rules) => load_rules(&rules)?,
+                None => discover_rules(&path)?.1,
+            };
             let findings = check(&path, &rule_file, &search.into())?;
             if !output.quiet {
-                print_findings(&findings, output.format)?;
+                print_findings(&findings, output.format, &path)?;
             }
             Ok(if findings.is_empty() {
                 EXIT_OK
@@ -140,7 +143,15 @@ fn execute(cli: Cli) -> Result<i32, String> {
             })
         }
         Command::TestRules { rules } => {
-            let rule_file = load_rules(&rules)?;
+            let rule_file = match rules {
+                Some(rules) => load_rules(&rules)?,
+                None => {
+                    discover_rules(&std::env::current_dir().map_err(|error| {
+                        format!("could not determine current directory: {error}")
+                    })?)?
+                    .1
+                }
+            };
             let failures = test_rules(&rule_file)?;
             for failure in &failures {
                 eprintln!("{failure}");

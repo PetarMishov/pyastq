@@ -85,6 +85,7 @@ Output and filtering options:
 ```sh
 past find . 'call:eval' --format json
 past find . 'call:eval' --format jsonl
+past find . 'call:eval' --format sarif
 past find . 'call:eval' --include 'src/**/*.py' --exclude '**/generated/**'
 past find . 'call:eval' --changed --max-matches 10
 past find . 'call:eval' --no-cache
@@ -133,6 +134,56 @@ past test-rules --rules past.toml
 
 `check` returns `1` when any rule matches. `test-rules` verifies that each
 `valid` example does not match and each `invalid` example does.
+
+Rules can also live in `pyproject.toml`:
+
+```toml
+[tool.past]
+exclude = ["generated/**", "migrations/**"]
+
+[[tool.past.rules]]
+id = "no-eval"
+query = "call:eval"
+message = "Avoid eval(); parse the expected input explicitly."
+severity = "error"
+valid = ["parse(value)"]
+invalid = ["eval(value)"]
+```
+
+Alternatively, reference a standalone rule file:
+
+```toml
+[tool.past]
+rules-file = "config/past.toml"
+exclude = ["build/**"]
+```
+
+`rules-file` is resolved relative to `pyproject.toml`. External and inline
+rules may be used together: external rules are loaded first, inline rules are
+appended, and exclusions from both configurations are combined. Rule IDs must
+remain unique across both sources.
+
+When `--rules` is omitted, `check` searches from the analyzed path toward the
+filesystem root for a `pyproject.toml` containing `[tool.past]`:
+
+```sh
+past check .
+past test-rules
+```
+
+Passing `--rules` continues to support standalone rule files and explicit
+`pyproject.toml` files:
+
+```sh
+past check . --rules past.toml
+past check . --rules pyproject.toml
+```
+
+SARIF 2.1.0 output is suitable for code-scanning systems:
+
+```sh
+past check . --format sarif > past.sarif
+```
 
 ## Suppressions
 

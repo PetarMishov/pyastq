@@ -1,5 +1,5 @@
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -13,7 +13,28 @@ use crate::search::{SearchContext, SearchOptions, search_source, search_source_q
 pub struct RuleFile {
     #[serde(default)]
     pub exclude: Vec<String>,
+    #[serde(default)]
     pub rules: Vec<Rule>,
+}
+
+#[derive(Deserialize)]
+struct PyProject {
+    tool: Option<PyProjectTools>,
+}
+
+#[derive(Deserialize)]
+struct PyProjectTools {
+    past: Option<PyProjectPast>,
+}
+
+#[derive(Deserialize)]
+struct PyProjectPast {
+    #[serde(default)]
+    exclude: Vec<String>,
+    #[serde(default)]
+    rules: Vec<Rule>,
+    #[serde(rename = "rules-file")]
+    rules_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -41,10 +62,88 @@ pub struct CompiledRule<'a> {
 pub fn load_rules(path: &Path) -> Result<RuleFile, String> {
     let source = std::fs::read_to_string(path)
         .map_err(|error| format!("could not read {}: {error}", path.display()))?;
-    let rules: RuleFile = toml::from_str(&source)
-        .map_err(|error| format!("invalid rule file {}: {error}", path.display()))?;
+    let rules = if path
+        .file_name()
+        .is_some_and(|name| name == "pyproject.toml")
+    {
+        parse_pyproject_rules(path, &source)?
+            .ok_or_else(|| format!("{} does not contain [tool.past]", path.display()))?
+    } else {
+        toml::from_str(&source)
+            .map_err(|error| format!("invalid rule file {}: {error}", path.display()))?
+    };
     validate_rules(&rules)?;
     Ok(rules)
+}
+
+pub fn discover_rules(start: &Path) -> Result<(PathBuf, RuleFile), String> {
+    let start = if start.is_file() {
+        start.parent().unwrap_or_else(|| Path::new("."))
+    } else {
+        start
+    };
+    let mut directory = start.canonicalize().map_err(|error| {
+        format!(
+            "could not resolve configuration search path {}: {error}",
+            start.display()
+        )
+    })?;
+
+    loop {
+        let candidate = directory.join("pyproject.toml");
+        if candidate.is_file() {
+            let source = std::fs::read_to_string(&candidate)
+                .map_err(|error| format!("could not read {}: {error}", candidate.display()))?;
+            if let Some(rules) = parse_pyproject_rules(&candidate, &source)? {
+                validate_rules(&rules)?;
+                return Ok((candidate, rules));
+            }
+        }
+        if !directory.pop() {
+            break;
+        }
+    }
+
+    Err(format!(
+        "no [tool.past] configuration found from {}; pass --rules <path>",
+        start.display()
+    ))
+}
+
+fn parse_pyproject_rules(path: &Path, source: &str) -> Result<Option<RuleFile>, String> {
+    let pyproject: PyProject = toml::from_str(source)
+        .map_err(|error| format!("invalid pyproject.toml {}: {error}", path.display()))?;
+    let Some(configuration) = pyproject.tool.and_then(|tool| tool.past) else {
+        return Ok(None);
+    };
+    let mut rules = RuleFile {
+        exclude: configuration.exclude,
+        rules: configuration.rules,
+    };
+
+    if let Some(rules_file) = configuration.rules_file {
+        let rules_path = path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(rules_file);
+        if rules_path
+            .file_name()
+            .is_some_and(|name| name == "pyproject.toml")
+        {
+            return Err(format!(
+                "{}: rules-file must reference a standalone rule file",
+                path.display()
+            ));
+        }
+        let source = std::fs::read_to_string(&rules_path)
+            .map_err(|error| format!("could not read {}: {error}", rules_path.display()))?;
+        let external: RuleFile = toml::from_str(&source)
+            .map_err(|error| format!("invalid rule file {}: {error}", rules_path.display()))?;
+        rules.exclude.extend(external.exclude);
+        rules.rules.splice(0..0, external.rules);
+    }
+
+    Ok(Some(rules))
 }
 
 pub fn check(
@@ -246,6 +345,9 @@ fn compile_rules(rule_file: &RuleFile) -> Result<Vec<CompiledRule<'_>>, String> 
 }
 
 fn validate_rules(rule_file: &RuleFile) -> Result<(), String> {
+    if rule_file.rules.is_empty() {
+        return Err("rule configuration must define at least one rule".to_owned());
+    }
     let mut ids = std::collections::HashSet::new();
     for rule in &rule_file.rules {
         if rule.id.trim().is_empty() {
@@ -272,7 +374,7 @@ fn default_severity() -> String {
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use super::{RuleFile, check, test_rules};
+    use super::{RuleFile, check, discover_rules, load_rules, test_rules};
     use crate::search::SearchOptions;
 
     static TEMPORARY_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
@@ -296,10 +398,7 @@ mod tests {
 
     #[test]
     fn caches_one_file_hash_with_results_for_each_rule() {
-        let id = TEMPORARY_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed);
-        let directory =
-            std::env::temp_dir().join(format!("past-rule-cache-{}-{id}", std::process::id()));
-        std::fs::create_dir_all(&directory).unwrap();
+        let directory = temporary_directory("rule-cache");
         std::fs::write(directory.join("example.py"), "eval(value)\nprint(value)\n").unwrap();
         let rules: RuleFile = toml::from_str(
             r#"
@@ -330,5 +429,124 @@ mod tests {
         assert_eq!(cached_file["results"].as_object().unwrap().len(), 2);
 
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn loads_and_discovers_tool_past_from_pyproject() {
+        let directory = temporary_directory("pyproject");
+        let nested = directory.join("src/package");
+        std::fs::create_dir_all(&nested).unwrap();
+        let pyproject = directory.join("pyproject.toml");
+        std::fs::write(
+            &pyproject,
+            r#"
+                [project]
+                name = "example"
+                version = "0.1.0"
+
+                [tool.past]
+                exclude = ["generated/**"]
+
+                [[tool.past.rules]]
+                id = "no-eval"
+                query = "call:eval"
+                message = "Avoid eval"
+                severity = "error"
+            "#,
+        )
+        .unwrap();
+
+        let explicit = load_rules(&pyproject).unwrap();
+        assert_eq!(explicit.rules.len(), 1);
+        assert_eq!(explicit.exclude, ["generated/**"]);
+
+        let (discovered_path, discovered) = discover_rules(&nested).unwrap();
+        assert_eq!(discovered_path, pyproject);
+        assert_eq!(discovered.rules[0].id, "no-eval");
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn loads_relative_rules_file_and_merges_inline_rules() {
+        let directory = temporary_directory("external-rules");
+        std::fs::create_dir_all(directory.join("config")).unwrap();
+        std::fs::write(
+            directory.join("config/strict.toml"),
+            r#"
+                exclude = ["vendor/**"]
+
+                [[rules]]
+                id = "no-eval"
+                query = "call:eval"
+                message = "Avoid eval"
+            "#,
+        )
+        .unwrap();
+        let pyproject = directory.join("pyproject.toml");
+        std::fs::write(
+            &pyproject,
+            r#"
+                [tool.past]
+                rules-file = "config/strict.toml"
+                exclude = ["generated/**"]
+
+                [[tool.past.rules]]
+                id = "no-print"
+                query = "call:print"
+                message = "Avoid print"
+            "#,
+        )
+        .unwrap();
+
+        let rules = load_rules(&pyproject).unwrap();
+        assert_eq!(rules.exclude, ["generated/**", "vendor/**"]);
+        assert_eq!(rules.rules.len(), 2);
+        assert_eq!(rules.rules[0].id, "no-eval");
+        assert_eq!(rules.rules[1].id, "no-print");
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn rejects_duplicate_ids_across_external_and_inline_rules() {
+        let directory = temporary_directory("duplicate-external-rules");
+        std::fs::write(
+            directory.join("rules.toml"),
+            r#"
+                [[rules]]
+                id = "no-eval"
+                query = "call:eval"
+                message = "Avoid eval"
+            "#,
+        )
+        .unwrap();
+        let pyproject = directory.join("pyproject.toml");
+        std::fs::write(
+            &pyproject,
+            r#"
+                [tool.past]
+                rules-file = "rules.toml"
+
+                [[tool.past.rules]]
+                id = "no-eval"
+                query = "call:eval"
+                message = "Avoid eval again"
+            "#,
+        )
+        .unwrap();
+
+        let error = load_rules(&pyproject).unwrap_err();
+        assert!(error.contains("duplicate rule ID `no-eval`"));
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    fn temporary_directory(label: &str) -> std::path::PathBuf {
+        let id = TEMPORARY_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed);
+        let directory =
+            std::env::temp_dir().join(format!("past-{label}-{}-{id}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        directory
     }
 }
