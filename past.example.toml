@@ -1,0 +1,25 @@
+exclude = ["**/generated/**", "**/migrations/**"]
+
+[[rules]]
+id = "no-eval"
+query = "call:eval"
+message = "Avoid eval(); parse the expected input explicitly."
+severity = "error"
+valid = ["parse(value)"]
+invalid = ["eval(value)"]
+
+[[rules]]
+id = "request-timeout"
+query = "call:requests.get AND NOT argument:timeout:*"
+message = "HTTP requests must specify a timeout."
+severity = "warning"
+valid = ['requests.get(url, timeout=10)']
+invalid = ['requests.get(url)']
+
+[[rules]]
+id = "method-name-case"
+query = "function:regex:^[A-Z] AND ancestor(class:*)"
+message = "Method names must start with a lowercase letter."
+severity = "warning"
+valid = ["class User:\n    def save(self):\n        pass"]
+invalid = ["class User:\n    def Save(self):\n        pass"]
