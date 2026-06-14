@@ -87,10 +87,18 @@ past find . 'call:eval' --format json
 past find . 'call:eval' --format jsonl
 past find . 'call:eval' --include 'src/**/*.py' --exclude '**/generated/**'
 past find . 'call:eval' --changed --max-matches 10
+past find . 'call:eval' --no-cache
 ```
 
 `--changed` includes staged, unstaged, and untracked Python files reported by
 Git.
+
+Directory searches store one content hash per file and findings per query or
+rule in `.past-cache.json`. Unchanged files reuse cached findings. Changed files
+are read, hashed, and parsed once, then all applicable rules run against the
+same syntax tree. Use `--no-cache` to force a full scan. Cache failures fall
+back to a full scan, and `--changed` or `--max-matches` searches do not use the
+cache.
 
 ## Rule Files
 

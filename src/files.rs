@@ -26,6 +26,7 @@ impl FileFilter {
             "**/.venv/**".to_owned(),
             "**/venv/**".to_owned(),
             "**/__pycache__/**".to_owned(),
+            "**/.past-cache.json".to_owned(),
         ];
         all_excludes.extend_from_slice(excludes);
 

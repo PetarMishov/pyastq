@@ -1,7 +1,10 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::query::parse_query;
-use crate::search::{SearchContext, search_source};
+use crate::search::{SearchContext, SearchOptions, search_path, search_source};
+
+static TEMPORARY_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
 
 fn context(rule_id: Option<&str>) -> SearchContext<'_> {
     SearchContext {
@@ -136,4 +139,48 @@ fn matches_imports_and_value_predicates() {
             .len(),
         1
     );
+}
+
+#[test]
+fn caches_unchanged_files_and_invalidates_changed_or_deleted_files() {
+    let directory = temporary_directory();
+    let first = directory.join("first.py");
+    let second = directory.join("second.py");
+    std::fs::write(&first, "eval(value)\n").unwrap();
+    std::fs::write(&second, "parse(value)\n").unwrap();
+
+    let query = parse_query("call:eval").unwrap();
+    let options = SearchOptions {
+        cache_key: Some("test|call:eval".to_owned()),
+        ..SearchOptions::default()
+    };
+
+    let initial = search_path(&directory, &query, &options, context(None)).unwrap();
+    assert_eq!(initial.len(), 1);
+    assert!(directory.join(".past-cache.json").is_file());
+
+    let unchanged = search_path(&directory, &query, &options, context(None)).unwrap();
+    assert_eq!(unchanged.len(), 1);
+    assert_eq!(unchanged[0].path, first.display().to_string());
+
+    std::fs::write(&first, "parse(value)\n").unwrap();
+    std::fs::write(&second, "eval(value)\n").unwrap();
+    let changed = search_path(&directory, &query, &options, context(None)).unwrap();
+    assert_eq!(changed.len(), 1);
+    assert_eq!(changed[0].path, second.display().to_string());
+
+    std::fs::remove_file(&second).unwrap();
+    let deleted = search_path(&directory, &query, &options, context(None)).unwrap();
+    assert!(deleted.is_empty());
+
+    let cache = std::fs::read_to_string(directory.join(".past-cache.json")).unwrap();
+    assert!(!cache.contains("second.py"));
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+fn temporary_directory() -> PathBuf {
+    let id = TEMPORARY_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed);
+    let directory = std::env::temp_dir().join(format!("past-cache-{}-{id}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    directory
 }

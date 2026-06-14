@@ -1,10 +1,13 @@
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use serde::Deserialize;
 
+use crate::cache::{SearchCache, content_hash};
+use crate::files::{FileFilter, collect_python_files};
 use crate::query::{Query, parse_query};
 use crate::report::Finding;
-use crate::search::{SearchContext, SearchOptions, search_path, search_source};
+use crate::search::{SearchContext, SearchOptions, search_source, search_source_queries};
 
 #[derive(Debug, Deserialize)]
 pub struct RuleFile {
@@ -50,49 +53,142 @@ pub fn check(
     base_options: &SearchOptions,
 ) -> Result<Vec<Finding>, String> {
     let compiled = compile_rules(rule_file)?;
-    let mut findings = Vec::new();
-
-    for compiled_rule in compiled {
-        let options = SearchOptions {
-            includes: base_options.includes.clone(),
-            required_includes: if compiled_rule.rule.include.is_empty() {
-                Vec::new()
-            } else {
-                vec![compiled_rule.rule.include.clone()]
-            },
-            excludes: base_options
-                .excludes
+    let global_excludes: Vec<_> = base_options
+        .excludes
+        .iter()
+        .chain(&rule_file.exclude)
+        .cloned()
+        .collect();
+    let collection_filter = FileFilter::new(
+        root,
+        std::slice::from_ref(&base_options.includes),
+        &global_excludes,
+        base_options.changed_only,
+    )?;
+    let files = collect_python_files(root, &collection_filter)?;
+    let rule_filters = compiled
+        .iter()
+        .map(|compiled_rule| {
+            let include_groups = vec![
+                base_options.includes.clone(),
+                compiled_rule.rule.include.clone(),
+            ];
+            let excludes: Vec<_> = global_excludes
                 .iter()
-                .chain(&rule_file.exclude)
                 .chain(&compiled_rule.rule.exclude)
                 .cloned()
-                .collect(),
-            changed_only: base_options.changed_only,
-            max_matches: base_options
-                .max_matches
-                .map(|maximum| maximum.saturating_sub(findings.len())),
-        };
+                .collect();
+            FileFilter::new(root, &include_groups, &excludes, false)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let result_keys: Vec<_> = compiled
+        .iter()
+        .map(|compiled_rule| rule_result_key(root, compiled_rule, base_options, &global_excludes))
+        .collect();
+    let cache_enabled =
+        base_options.use_cache && !base_options.changed_only && base_options.max_matches.is_none();
+    let mut cache = cache_enabled.then(|| SearchCache::load(root));
+    let mut current_files = vec![BTreeSet::new(); compiled.len()];
+    let mut findings_by_rule = vec![Vec::new(); compiled.len()];
+    let base = if root.is_file() {
+        root.parent().unwrap_or_else(|| Path::new("."))
+    } else {
+        root
+    };
 
-        findings.extend(search_path(
-            root,
-            &compiled_rule.query,
-            &options,
-            SearchContext {
-                rule_id: Some(&compiled_rule.rule.id),
-                message: Some(&compiled_rule.rule.message),
-                severity: Some(&compiled_rule.rule.severity),
-            },
-        )?);
+    for path in files {
+        let relative = path.strip_prefix(base).unwrap_or(&path);
+        let source = std::fs::read_to_string(&path)
+            .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+        let hash = content_hash(source.as_bytes());
+        let file_key = cache
+            .as_ref()
+            .map(|cache| cache.file_key(&path))
+            .unwrap_or_default();
+        let applicable: Vec<_> = rule_filters
+            .iter()
+            .enumerate()
+            .filter_map(|(index, filter)| filter.accepts(relative).then_some(index))
+            .collect();
+        let mut missing = Vec::new();
 
-        if base_options
-            .max_matches
-            .is_some_and(|maximum| findings.len() >= maximum)
-        {
-            findings.truncate(base_options.max_matches.unwrap_or(findings.len()));
-            break;
+        for &index in &applicable {
+            if cache.is_some() {
+                current_files[index].insert(file_key.clone());
+            }
+            match cache
+                .as_ref()
+                .and_then(|cache| cache.findings(&file_key, &hash, &result_keys[index]))
+            {
+                Some(findings) => findings_by_rule[index].extend(findings),
+                None => missing.push(index),
+            }
+        }
+
+        if missing.is_empty() {
+            continue;
+        }
+
+        let queries: Vec<_> = missing
+            .iter()
+            .map(|&index| {
+                let rule = compiled[index].rule;
+                (
+                    &compiled[index].query,
+                    SearchContext {
+                        rule_id: Some(&rule.id),
+                        message: Some(&rule.message),
+                        severity: Some(&rule.severity),
+                    },
+                )
+            })
+            .collect();
+        let searched = search_source_queries(&path, &source, &queries)?;
+        for (index, findings) in missing.into_iter().zip(searched) {
+            if let Some(cache) = &mut cache {
+                cache.store(
+                    &file_key,
+                    &hash,
+                    result_keys[index].clone(),
+                    findings.clone(),
+                );
+            }
+            findings_by_rule[index].extend(findings);
         }
     }
+
+    if let Some(cache) = &mut cache {
+        for (result_key, files) in result_keys.iter().zip(&current_files) {
+            cache.retain_result_files(result_key, files);
+        }
+        let _ = cache.save();
+    }
+
+    let mut findings: Vec<_> = findings_by_rule.into_iter().flatten().collect();
+    if let Some(maximum) = base_options.max_matches {
+        findings.truncate(maximum);
+    }
     Ok(findings)
+}
+
+fn rule_result_key(
+    root: &Path,
+    compiled_rule: &CompiledRule<'_>,
+    options: &SearchOptions,
+    global_excludes: &[String],
+) -> String {
+    format!(
+        "check|{}|{}|{}|{}|root={}|include={:?}|rule_include={:?}|exclude={:?}|rule_exclude={:?}",
+        compiled_rule.rule.id,
+        compiled_rule.rule.query,
+        compiled_rule.rule.message,
+        compiled_rule.rule.severity,
+        root.display(),
+        options.includes,
+        compiled_rule.rule.include,
+        global_excludes,
+        compiled_rule.rule.exclude
+    )
 }
 
 pub fn test_rules(rule_file: &RuleFile) -> Result<Vec<String>, String> {
@@ -174,7 +270,12 @@ fn default_severity() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{RuleFile, test_rules};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use super::{RuleFile, check, test_rules};
+    use crate::search::SearchOptions;
+
+    static TEMPORARY_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn validates_rule_examples() {
@@ -191,5 +292,43 @@ mod tests {
         .unwrap();
 
         assert!(test_rules(&rules).unwrap().is_empty());
+    }
+
+    #[test]
+    fn caches_one_file_hash_with_results_for_each_rule() {
+        let id = TEMPORARY_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed);
+        let directory =
+            std::env::temp_dir().join(format!("past-rule-cache-{}-{id}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("example.py"), "eval(value)\nprint(value)\n").unwrap();
+        let rules: RuleFile = toml::from_str(
+            r#"
+                [[rules]]
+                id = "no-eval"
+                query = "call:eval"
+                message = "Avoid eval"
+
+                [[rules]]
+                id = "no-print"
+                query = "call:print"
+                message = "Avoid print"
+            "#,
+        )
+        .unwrap();
+
+        let first = check(&directory, &rules, &SearchOptions::default()).unwrap();
+        assert_eq!(first.len(), 2);
+        let second = check(&directory, &rules, &SearchOptions::default()).unwrap();
+        assert_eq!(second.len(), 2);
+
+        let cache: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(directory.join(".past-cache.json")).unwrap(),
+        )
+        .unwrap();
+        let cached_file = &cache["files"]["example.py"];
+        assert!(cached_file["hash"].is_string());
+        assert_eq!(cached_file["results"].as_object().unwrap().len(), 2);
+
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

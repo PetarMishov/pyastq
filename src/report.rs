@@ -1,5 +1,5 @@
 use clap::ValueEnum;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum OutputFormat {
@@ -8,7 +8,7 @@ pub enum OutputFormat {
     Jsonl,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Finding {
     pub path: String,
     pub line: usize,

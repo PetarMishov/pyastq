@@ -66,6 +66,9 @@ struct SearchArgs {
     /// Stop after this many matches.
     #[arg(long)]
     max_matches: Option<usize>,
+    /// Disable the on-disk file hash cache.
+    #[arg(long)]
+    no_cache: bool,
 }
 
 #[derive(Args)]
@@ -96,11 +99,14 @@ fn execute(cli: Cli) -> Result<i32, String> {
             search,
             output,
         } => {
+            let cache_key = format!("find|{query}");
             let query = parse_query(&query)?;
+            let mut search: SearchOptions = search.into();
+            search.cache_key = Some(cache_key);
             let findings = search_path(
                 &path,
                 &query,
-                &search.into(),
+                &search,
                 SearchContext {
                     rule_id: None,
                     message: None,
@@ -157,6 +163,8 @@ impl From<SearchArgs> for SearchOptions {
             excludes: value.exclude,
             changed_only: value.changed,
             max_matches: value.max_matches,
+            use_cache: !value.no_cache,
+            cache_key: None,
         }
     }
 }
