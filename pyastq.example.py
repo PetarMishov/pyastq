@@ -1,4 +1,4 @@
-"""Example input for ``past.example.toml``.
+"""Example input for ``pyastq.example.toml``.
 
 This module intentionally mixes code that should be reported with similar code
 that should remain clean. It is meant to be analyzed, not executed.
@@ -41,7 +41,7 @@ def evaluate_expression(value: str) -> Any:
 
 def evaluate_trusted_fixture(value: str) -> Any:
     """Suppressed exception: this eval should not be reported."""
-    return eval(value)  # past: ignore no-eval
+    return eval(value)  # pyastq: ignore no-eval
 
 
 def fetch_profile(user_id: int) -> dict[str, Any]:
@@ -74,7 +74,7 @@ def fetch_with_options(url: str, options: dict[str, Any]) -> requests.Response:
 
 def fetch_ignored_endpoint(url: str) -> requests.Response:
     """Suppressed exception for the request-timeout rule only."""
-    # past: ignore request-timeout
+    # pyastq: ignore request-timeout
     return requests.get(url)
 
 
@@ -100,7 +100,7 @@ class MemoryCache:
 
 
 class LegacyAdapter:
-    # past: ignore method-name-case
+    # pyastq: ignore method-name-case
     def Export(self) -> dict[str, Any]:
         """Suppressed exception: retained for an external legacy API."""
         return {}

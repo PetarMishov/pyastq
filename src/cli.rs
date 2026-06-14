@@ -13,7 +13,7 @@ const EXIT_ERROR: i32 = 2;
 
 #[derive(Parser)]
 #[command(
-    name = "past",
+    name = "pyastq",
     version,
     about = "Structural search and rules for Python"
 )]
@@ -35,7 +35,7 @@ enum Command {
         #[command(flatten)]
         output: OutputArgs,
     },
-    /// Run configured rules, discovering [tool.past] when --rules is omitted.
+    /// Run configured rules, discovering [tool.pyastq] when --rules is omitted.
     Check {
         path: PathBuf,
         #[arg(long, short = 'r')]

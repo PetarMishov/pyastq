@@ -1,0 +1,25 @@
+[build-system]
+requires = ["maturin>=1.9,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "pyastq"
+dynamic = ["version"]
+description = "Structural Python search and lightweight AST-based rule checking"
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [{ name = "Petar Mishov" }]
+keywords = ["ast", "cli", "linting", "python", "structural-search"]
+classifiers = [
+    "Environment :: Console",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Topic :: Software Development :: Quality Assurance",
+]
+
+[project.urls]
+Repository = "https://github.com/PetarMishov/pyastq"
+
+[tool.maturin]
+bindings = "bin"
+strip = true

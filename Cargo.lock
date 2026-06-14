@@ -185,7 +185,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "py_ast"
+name = "pyastq"
 version = "0.1.0"
 dependencies = [
  "clap",

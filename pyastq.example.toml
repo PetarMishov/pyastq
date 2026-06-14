@@ -1,6 +1,6 @@
 # A strict, high-signal baseline for production Python code.
 #
-# These rules intentionally focus on patterns that `past` can identify
+# These rules intentionally focus on patterns that `pyastq` can identify
 # structurally without type inference or data-flow analysis.
 
 exclude = [

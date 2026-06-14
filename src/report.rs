@@ -78,7 +78,7 @@ pub fn print_findings(
 fn sarif_log(findings: &[Finding], root: &Path) -> Value {
     let mut rules = BTreeMap::new();
     for finding in findings {
-        let id = finding.rule_id.as_deref().unwrap_or("past/find");
+        let id = finding.rule_id.as_deref().unwrap_or("pyastq/find");
         rules.entry(id).or_insert_with(|| {
             json!({
                 "id": id,
@@ -99,7 +99,7 @@ fn sarif_log(findings: &[Finding], root: &Path) -> Value {
     let results: Vec<_> = findings
         .iter()
         .map(|finding| {
-            let rule_id = finding.rule_id.as_deref().unwrap_or("past/find");
+            let rule_id = finding.rule_id.as_deref().unwrap_or("pyastq/find");
             let uri = artifact_uri(&finding.path, root);
             let message = finding
                 .message
@@ -126,7 +126,7 @@ fn sarif_log(findings: &[Finding], root: &Path) -> Value {
                     }
                 }],
                 "partialFingerprints": {
-                    "past/v1": fingerprint
+                    "pyastq/v1": fingerprint
                 }
             })
         })
@@ -138,7 +138,7 @@ fn sarif_log(findings: &[Finding], root: &Path) -> Value {
         "runs": [{
             "tool": {
                 "driver": {
-                    "name": "past",
+                    "name": "pyastq",
                     "version": env!("CARGO_PKG_VERSION"),
                     "rules": rules.into_values().collect::<Vec<_>>()
                 }

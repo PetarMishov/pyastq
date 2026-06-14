@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::report::Finding;
 
 const CACHE_VERSION: u32 = 2;
-const CACHE_FILE: &str = ".past-cache.json";
+const CACHE_FILE: &str = ".pyastq-cache.json";
 
 #[derive(Default, Deserialize, Serialize)]
 struct CacheData {

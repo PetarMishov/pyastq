@@ -1,5 +1,6 @@
 /target
 /example_py_files
 /.past-cache.json
+/.pyastq-cache.json
 perf.data*
 flamegraph.svg

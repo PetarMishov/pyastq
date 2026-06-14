@@ -227,7 +227,7 @@ fn python_parser() -> Result<Parser, String> {
 fn file_is_suppressed(source: &str, rule_id: &str) -> bool {
     source
         .lines()
-        .any(|line| directive_matches(line, "past: ignore-file", rule_id))
+        .any(|line| directive_matches(line, "pyastq: ignore-file", rule_id))
 }
 
 fn line_is_suppressed(source: &str, line_number: usize, rule_id: &str) -> bool {
@@ -238,7 +238,7 @@ fn line_is_suppressed(source: &str, line_number: usize, rule_id: &str) -> bool {
     current
         .into_iter()
         .chain(previous)
-        .any(|line| directive_matches(line, "past: ignore", rule_id))
+        .any(|line| directive_matches(line, "pyastq: ignore", rule_id))
 }
 
 fn directive_matches(line: &str, directive: &str, rule_id: &str) -> bool {

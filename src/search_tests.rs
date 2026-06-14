@@ -44,7 +44,7 @@ class Admin:
 
 #[test]
 fn honors_inline_suppressions() {
-    let source = "eval(value)  # past: ignore no-eval\n";
+    let source = "eval(value)  # pyastq: ignore no-eval\n";
     let query = parse_query("call:eval").unwrap();
     let findings = search_source(
         Path::new("example.py"),
@@ -96,7 +96,7 @@ def unsafe():
 #[test]
 fn honors_file_and_previous_line_suppressions() {
     let query = parse_query("call:eval").unwrap();
-    let file_suppressed = "# past: ignore-file no-eval\neval(first)\neval(second)\n";
+    let file_suppressed = "# pyastq: ignore-file no-eval\neval(first)\neval(second)\n";
     assert!(
         search_source(
             Path::new("example.py"),
@@ -108,7 +108,7 @@ fn honors_file_and_previous_line_suppressions() {
         .is_empty()
     );
 
-    let line_suppressed = "# past: ignore no-eval\neval(value)\n";
+    let line_suppressed = "# pyastq: ignore no-eval\neval(value)\n";
     assert!(
         search_source(
             Path::new("example.py"),
@@ -157,7 +157,7 @@ fn caches_unchanged_files_and_invalidates_changed_or_deleted_files() {
 
     let initial = search_path(&directory, &query, &options, context(None)).unwrap();
     assert_eq!(initial.len(), 1);
-    assert!(directory.join(".past-cache.json").is_file());
+    assert!(directory.join(".pyastq-cache.json").is_file());
 
     let unchanged = search_path(&directory, &query, &options, context(None)).unwrap();
     assert_eq!(unchanged.len(), 1);
@@ -173,14 +173,14 @@ fn caches_unchanged_files_and_invalidates_changed_or_deleted_files() {
     let deleted = search_path(&directory, &query, &options, context(None)).unwrap();
     assert!(deleted.is_empty());
 
-    let cache = std::fs::read_to_string(directory.join(".past-cache.json")).unwrap();
+    let cache = std::fs::read_to_string(directory.join(".pyastq-cache.json")).unwrap();
     assert!(!cache.contains("second.py"));
     std::fs::remove_dir_all(directory).unwrap();
 }
 
 fn temporary_directory() -> PathBuf {
     let id = TEMPORARY_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed);
-    let directory = std::env::temp_dir().join(format!("past-cache-{}-{id}", std::process::id()));
+    let directory = std::env::temp_dir().join(format!("pyastq-cache-{}-{id}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
     directory
 }

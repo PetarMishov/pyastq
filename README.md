@@ -1,6 +1,6 @@
-# past
+# pyastq
 
-`past` is a structural Python searcher and lightweight rule runner. It searches
+`pyastq` is a structural Python searcher and lightweight rule runner. It searches
 the Python AST rather than raw text, making it suitable for local scripts,
 pre-commit hooks, and CI checks.
 
@@ -10,16 +10,63 @@ pre-commit hooks, and CI checks.
 cargo build --release
 ```
 
-The binary is written to `target/release/past`.
+The binary is written to `target/release/pyastq`.
+
+## Install
+
+`pyastq` is a Rust executable distributed as the `pyastq` Python package. Install
+it as an isolated command-line tool:
+
+```sh
+uv tool install pyastq
+# or
+pipx install pyastq
+```
+
+For local development:
+
+```sh
+uv tool install .
+pyastq --help
+```
+
+The PyPI package is only a distribution mechanism for the executable; it does
+not provide an importable Python module.
+
+### Versions
+
+Release tags are the source of truth for published package versions. To publish
+a new release:
+
+1. Tag the commit, for example `git tag v0.2.0`.
+2. Push the tag with `git push origin v0.2.0`.
+
+The release workflow validates the tag, changes the package version in its
+temporary checkout, builds wheels for Linux, macOS, and Windows, publishes them
+to PyPI, and creates a GitHub release. `Cargo.toml` may therefore still show the
+development version from the tagged commit.
+
+An existing tag can be released from GitHub Actions by running the `Release`
+workflow manually and entering the tag.
+
+PyPI retains previously published versions, so users can select one explicitly:
+
+```sh
+uv tool install 'pyastq==0.1.0'
+pipx install 'pyastq==0.1.0'
+```
+
+Uploading another build with the same version is not a replacement mechanism.
+Fixes require a new version such as `0.1.1`.
 
 ## Structural Search
 
 ```sh
-past find src 'call:eval'
-past find src 'class:* -> function:regex:^[A-Z]'
-past find src 'call:request AND argument:timeout:>30'
-past find src 'function:* AND descendant(call:open) AND NOT descendant(call:close)'
-past find src 'call:print AND ancestor(function:*)'
+pyastq find src 'call:eval'
+pyastq find src 'class:* -> function:regex:^[A-Z]'
+pyastq find src 'call:request AND argument:timeout:>30'
+pyastq find src 'function:* AND descendant(call:open) AND NOT descendant(call:close)'
+pyastq find src 'call:print AND ancestor(function:*)'
 ```
 
 The first pattern is the node reported as the finding. Conditions inspect its
@@ -71,7 +118,7 @@ allow spaces, for example `argument:0:"hello world"`.
 make matches return `1`:
 
 ```sh
-past find . 'call:eval' --fail-on-match --quiet
+pyastq find . 'call:eval' --fail-on-match --quiet
 ```
 
 Exit codes:
@@ -83,19 +130,19 @@ Exit codes:
 Output and filtering options:
 
 ```sh
-past find . 'call:eval' --format json
-past find . 'call:eval' --format jsonl
-past find . 'call:eval' --format sarif
-past find . 'call:eval' --include 'src/**/*.py' --exclude '**/generated/**'
-past find . 'call:eval' --changed --max-matches 10
-past find . 'call:eval' --no-cache
+pyastq find . 'call:eval' --format json
+pyastq find . 'call:eval' --format jsonl
+pyastq find . 'call:eval' --format sarif
+pyastq find . 'call:eval' --include 'src/**/*.py' --exclude '**/generated/**'
+pyastq find . 'call:eval' --changed --max-matches 10
+pyastq find . 'call:eval' --no-cache
 ```
 
 `--changed` includes staged, unstaged, and untracked Python files reported by
 Git.
 
 Directory searches store one content hash per file and findings per query or
-rule in `.past-cache.json`. Unchanged files reuse cached findings. Changed files
+rule in `.pyastq-cache.json`. Unchanged files reuse cached findings. Changed files
 are read, hashed, and parsed once, then all applicable rules run against the
 same syntax tree. Use `--no-cache` to force a full scan. Cache failures fall
 back to a full scan, and `--changed` or `--max-matches` searches do not use the
@@ -103,7 +150,7 @@ cache.
 
 ## Rule Files
 
-Rules use TOML. See [`past.example.toml`](past.example.toml).
+Rules use TOML. See [`pyastq.example.toml`](pyastq.example.toml).
 
 ```toml
 exclude = ["**/generated/**"]
@@ -127,9 +174,9 @@ severity = "warning"
 Run rules:
 
 ```sh
-past check . --rules past.toml
-past check . --rules past.toml --format json --changed
-past test-rules --rules past.toml
+pyastq check . --rules pyastq.toml
+pyastq check . --rules pyastq.toml --format json --changed
+pyastq test-rules --rules pyastq.toml
 ```
 
 `check` returns `1` when any rule matches. `test-rules` verifies that each
@@ -138,10 +185,10 @@ past test-rules --rules past.toml
 Rules can also live in `pyproject.toml`:
 
 ```toml
-[tool.past]
+[tool.pyastq]
 exclude = ["generated/**", "migrations/**"]
 
-[[tool.past.rules]]
+[[tool.pyastq.rules]]
 id = "no-eval"
 query = "call:eval"
 message = "Avoid eval(); parse the expected input explicitly."
@@ -153,8 +200,8 @@ invalid = ["eval(value)"]
 Alternatively, reference a standalone rule file:
 
 ```toml
-[tool.past]
-rules-file = "config/past.toml"
+[tool.pyastq]
+rules-file = "config/pyastq.toml"
 exclude = ["build/**"]
 ```
 
@@ -164,25 +211,25 @@ appended, and exclusions from both configurations are combined. Rule IDs must
 remain unique across both sources.
 
 When `--rules` is omitted, `check` searches from the analyzed path toward the
-filesystem root for a `pyproject.toml` containing `[tool.past]`:
+filesystem root for a `pyproject.toml` containing `[tool.pyastq]`:
 
 ```sh
-past check .
-past test-rules
+pyastq check .
+pyastq test-rules
 ```
 
 Passing `--rules` continues to support standalone rule files and explicit
 `pyproject.toml` files:
 
 ```sh
-past check . --rules past.toml
-past check . --rules pyproject.toml
+pyastq check . --rules pyastq.toml
+pyastq check . --rules pyproject.toml
 ```
 
 SARIF 2.1.0 output is suitable for code-scanning systems:
 
 ```sh
-past check . --format sarif > past.sarif
+pyastq check . --format sarif > pyastq.sarif
 ```
 
 ## Suppressions
@@ -190,12 +237,12 @@ past check . --format sarif > past.sarif
 Suppress one line, the following line, or an entire file:
 
 ```python
-eval(value)  # past: ignore no-eval
+eval(value)  # pyastq: ignore no-eval
 
-# past: ignore no-eval
+# pyastq: ignore no-eval
 eval(value)
 
-# past: ignore-file no-eval
+# pyastq: ignore-file no-eval
 ```
 
 Omitting the rule ID suppresses every rule at that location. Multiple IDs can
@@ -207,9 +254,9 @@ be separated by spaces or commas.
 repos:
   - repo: local
     hooks:
-      - id: past
-        name: past structural rules
-        entry: target/release/past check . --rules past.toml --changed
+      - id: pyastq
+        name: pyastq structural rules
+        entry: target/release/pyastq check . --rules pyastq.toml --changed
         language: system
         pass_filenames: false
 ```

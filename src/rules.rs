@@ -24,11 +24,11 @@ struct PyProject {
 
 #[derive(Deserialize)]
 struct PyProjectTools {
-    past: Option<PyProjectPast>,
+    pyastq: Option<PyProjectPyastq>,
 }
 
 #[derive(Deserialize)]
-struct PyProjectPast {
+struct PyProjectPyastq {
     #[serde(default)]
     exclude: Vec<String>,
     #[serde(default)]
@@ -67,7 +67,7 @@ pub fn load_rules(path: &Path) -> Result<RuleFile, String> {
         .is_some_and(|name| name == "pyproject.toml")
     {
         parse_pyproject_rules(path, &source)?
-            .ok_or_else(|| format!("{} does not contain [tool.past]", path.display()))?
+            .ok_or_else(|| format!("{} does not contain [tool.pyastq]", path.display()))?
     } else {
         toml::from_str(&source)
             .map_err(|error| format!("invalid rule file {}: {error}", path.display()))?
@@ -105,7 +105,7 @@ pub fn discover_rules(start: &Path) -> Result<(PathBuf, RuleFile), String> {
     }
 
     Err(format!(
-        "no [tool.past] configuration found from {}; pass --rules <path>",
+        "no [tool.pyastq] configuration found from {}; pass --rules <path>",
         start.display()
     ))
 }
@@ -113,7 +113,7 @@ pub fn discover_rules(start: &Path) -> Result<(PathBuf, RuleFile), String> {
 fn parse_pyproject_rules(path: &Path, source: &str) -> Result<Option<RuleFile>, String> {
     let pyproject: PyProject = toml::from_str(source)
         .map_err(|error| format!("invalid pyproject.toml {}: {error}", path.display()))?;
-    let Some(configuration) = pyproject.tool.and_then(|tool| tool.past) else {
+    let Some(configuration) = pyproject.tool.and_then(|tool| tool.pyastq) else {
         return Ok(None);
     };
     let mut rules = RuleFile {
@@ -421,7 +421,7 @@ mod tests {
         assert_eq!(second.len(), 2);
 
         let cache: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(directory.join(".past-cache.json")).unwrap(),
+            &std::fs::read_to_string(directory.join(".pyastq-cache.json")).unwrap(),
         )
         .unwrap();
         let cached_file = &cache["files"]["example.py"];
@@ -432,7 +432,7 @@ mod tests {
     }
 
     #[test]
-    fn loads_and_discovers_tool_past_from_pyproject() {
+    fn loads_and_discovers_tool_pyastq_from_pyproject() {
         let directory = temporary_directory("pyproject");
         let nested = directory.join("src/package");
         std::fs::create_dir_all(&nested).unwrap();
@@ -444,10 +444,10 @@ mod tests {
                 name = "example"
                 version = "0.1.0"
 
-                [tool.past]
+                [tool.pyastq]
                 exclude = ["generated/**"]
 
-                [[tool.past.rules]]
+                [[tool.pyastq.rules]]
                 id = "no-eval"
                 query = "call:eval"
                 message = "Avoid eval"
@@ -487,11 +487,11 @@ mod tests {
         std::fs::write(
             &pyproject,
             r#"
-                [tool.past]
+                [tool.pyastq]
                 rules-file = "config/strict.toml"
                 exclude = ["generated/**"]
 
-                [[tool.past.rules]]
+                [[tool.pyastq.rules]]
                 id = "no-print"
                 query = "call:print"
                 message = "Avoid print"
@@ -525,10 +525,10 @@ mod tests {
         std::fs::write(
             &pyproject,
             r#"
-                [tool.past]
+                [tool.pyastq]
                 rules-file = "rules.toml"
 
-                [[tool.past.rules]]
+                [[tool.pyastq.rules]]
                 id = "no-eval"
                 query = "call:eval"
                 message = "Avoid eval again"
@@ -545,7 +545,7 @@ mod tests {
     fn temporary_directory(label: &str) -> std::path::PathBuf {
         let id = TEMPORARY_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed);
         let directory =
-            std::env::temp_dir().join(format!("past-{label}-{}-{id}", std::process::id()));
+            std::env::temp_dir().join(format!("pyastq-{label}-{}-{id}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         directory
     }
