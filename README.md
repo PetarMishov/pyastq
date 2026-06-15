@@ -153,6 +153,7 @@ pyastq find . 'call:eval' --format sarif
 pyastq find . 'call:eval' --include 'src/**/*.py' --exclude '**/generated/**'
 pyastq find . 'call:eval' --changed --max-matches 10
 pyastq find . 'call:eval' --no-cache
+pyastq find . 'call:eval' --num-workers 4
 ```
 
 `--changed` includes staged, unstaged, and untracked Python files reported by
@@ -163,7 +164,8 @@ rule in `.pyastq-cache.json`. Unchanged files reuse cached findings. Changed fil
 are read, hashed, and parsed once, then all applicable rules run against the
 same syntax tree. Use `--no-cache` to force a full scan. Cache failures fall
 back to a full scan, and `--changed` or `--max-matches` searches do not use the
-cache.
+cache. File processing uses one worker by default; `--num-workers` enables
+parallel processing.
 
 ## Rule Files
 

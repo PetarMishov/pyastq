@@ -69,6 +69,9 @@ struct SearchArgs {
     /// Disable the on-disk file hash cache.
     #[arg(long)]
     no_cache: bool,
+    /// Number of files to process concurrently.
+    #[arg(long, default_value_t = 1, value_parser = parse_num_workers)]
+    num_workers: usize,
 }
 
 #[derive(Args)]
@@ -176,7 +179,15 @@ impl From<SearchArgs> for SearchOptions {
             max_matches: value.max_matches,
             use_cache: !value.no_cache,
             cache_key: None,
+            num_workers: value.num_workers,
         }
+    }
+}
+
+fn parse_num_workers(value: &str) -> Result<usize, String> {
+    match value.parse::<usize>() {
+        Ok(workers) if workers > 0 => Ok(workers),
+        _ => Err("num-workers must be a positive integer".to_owned()),
     }
 }
 

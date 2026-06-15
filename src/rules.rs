@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use rayon::prelude::*;
 use serde::Deserialize;
 
 use crate::cache::{SearchCache, content_hash};
@@ -8,7 +9,8 @@ use crate::files::{FileFilter, collect_python_files};
 use crate::query::{Query, parse_query};
 use crate::report::{Finding, sort_findings};
 use crate::search::{
-    SearchContext, SearchOptions, search_source, search_source_queries, validate_python,
+    SearchContext, SearchOptions, python_parser, search_source, search_source_queries_with_parser,
+    validate_python_with_parser,
 };
 
 #[derive(Debug, Deserialize)]
@@ -190,76 +192,100 @@ pub fn check(
         base_options.use_cache && !base_options.changed_only && base_options.max_matches.is_none();
     let mut cache = cache_enabled.then(|| SearchCache::load(root));
     let mut current_files = vec![BTreeSet::new(); compiled.len()];
-    let mut findings_by_rule = vec![Vec::new(); compiled.len()];
     let base = if root.is_file() {
         root.parent().unwrap_or_else(|| Path::new("."))
     } else {
         root
     };
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(base_options.num_workers)
+        .build()
+        .map_err(|error| format!("could not create worker pool: {error}"))?;
+    let processed = pool.install(|| {
+        files
+            .par_iter()
+            .map_init(python_parser, |parser, path| {
+                let parser = parser.as_mut().map_err(|error| error.clone())?;
+                let relative = path.strip_prefix(base).unwrap_or(path);
+                let source = std::fs::read_to_string(path)
+                    .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+                let hash = content_hash(source.as_bytes());
+                let file_key = cache
+                    .as_ref()
+                    .map(|cache| cache.file_key(path))
+                    .unwrap_or_default();
+                let applicable: Vec<_> = rule_filters
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, filter)| filter.accepts(relative).then_some(index))
+                    .collect();
+                if applicable.is_empty() {
+                    validate_python_with_parser(parser, path, &source)?;
+                    return Ok((file_key, hash, Vec::new()));
+                }
 
-    for path in files {
-        let relative = path.strip_prefix(base).unwrap_or(&path);
-        let source = std::fs::read_to_string(&path)
-            .map_err(|error| format!("could not read {}: {error}", path.display()))?;
-        let hash = content_hash(source.as_bytes());
-        let file_key = cache
-            .as_ref()
-            .map(|cache| cache.file_key(&path))
-            .unwrap_or_default();
-        let applicable: Vec<_> = rule_filters
-            .iter()
-            .enumerate()
-            .filter_map(|(index, filter)| filter.accepts(relative).then_some(index))
-            .collect();
-        if applicable.is_empty() {
-            validate_python(&path, &source)?;
-            continue;
-        }
-        let mut missing = Vec::new();
+                let mut results = Vec::with_capacity(applicable.len());
+                let mut missing = Vec::new();
+                for index in applicable {
+                    match cache
+                        .as_ref()
+                        .and_then(|cache| cache.findings(&file_key, &hash, &result_keys[index]))
+                    {
+                        Some(mut findings) => {
+                            sort_findings(&mut findings);
+                            results.push((index, findings, false));
+                        }
+                        None => missing.push(index),
+                    }
+                }
 
-        for &index in &applicable {
+                let queries: Vec<_> = missing
+                    .iter()
+                    .map(|&index| {
+                        let rule = compiled[index].rule;
+                        (
+                            &compiled[index].query,
+                            SearchContext {
+                                rule_id: Some(&rule.id),
+                                message: Some(&rule.message),
+                                severity: Some(&rule.severity),
+                            },
+                        )
+                    })
+                    .collect();
+                let searched = search_source_queries_with_parser(parser, path, &source, &queries)?;
+                results.extend(
+                    missing
+                        .into_iter()
+                        .zip(searched)
+                        .map(|(index, findings)| (index, findings, true)),
+                );
+                results.sort_by_key(|(index, _, _)| *index);
+                Ok((file_key, hash, results))
+            })
+            .collect::<Vec<Result<_, String>>>()
+    });
+    let mut findings = Vec::new();
+
+    for result in processed {
+        let (file_key, hash, rule_results) = result?;
+        let mut file_findings = Vec::new();
+        for (index, rule_findings, missing) in rule_results {
             if cache.is_some() {
                 current_files[index].insert(file_key.clone());
             }
-            match cache
-                .as_ref()
-                .and_then(|cache| cache.findings(&file_key, &hash, &result_keys[index]))
-            {
-                Some(findings) => findings_by_rule[index].extend(findings),
-                None => missing.push(index),
-            }
-        }
-
-        if missing.is_empty() {
-            continue;
-        }
-
-        let queries: Vec<_> = missing
-            .iter()
-            .map(|&index| {
-                let rule = compiled[index].rule;
-                (
-                    &compiled[index].query,
-                    SearchContext {
-                        rule_id: Some(&rule.id),
-                        message: Some(&rule.message),
-                        severity: Some(&rule.severity),
-                    },
-                )
-            })
-            .collect();
-        let searched = search_source_queries(&path, &source, &queries)?;
-        for (index, findings) in missing.into_iter().zip(searched) {
-            if let Some(cache) = &mut cache {
+            if missing && let Some(cache) = &mut cache {
                 cache.store(
                     &file_key,
                     &hash,
                     result_keys[index].clone(),
-                    findings.clone(),
+                    rule_findings.clone(),
                 );
             }
-            findings_by_rule[index].extend(findings);
+            file_findings.extend(rule_findings);
         }
+        sort_findings(&mut file_findings);
+        findings.extend(file_findings);
     }
 
     if let Some(cache) = &mut cache {
@@ -269,8 +295,6 @@ pub fn check(
         let _ = cache.save();
     }
 
-    let mut findings: Vec<_> = findings_by_rule.into_iter().flatten().collect();
-    sort_findings(&mut findings);
     if let Some(maximum) = base_options.max_matches {
         findings.truncate(maximum);
     }
@@ -495,6 +519,50 @@ mod tests {
                 .map(|finding| (finding.line, finding.rule_id.as_deref()))
                 .collect::<Vec<_>>(),
             [(1, Some("no-print")), (2, Some("no-eval"))]
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn parallel_check_preserves_file_and_location_order() {
+        let directory = temporary_directory("parallel-order");
+        std::fs::write(directory.join("b.py"), "eval('third')\n").unwrap();
+        std::fs::write(directory.join("a.py"), "print('first')\neval('second')\n").unwrap();
+        let rules: RuleFile = toml::from_str(
+            r#"
+                [[rules]]
+                id = "no-eval"
+                query = "call:eval"
+                message = "Avoid eval"
+
+                [[rules]]
+                id = "no-print"
+                query = "call:print"
+                message = "Avoid print"
+            "#,
+        )
+        .unwrap();
+        let options = SearchOptions {
+            num_workers: 4,
+            ..SearchOptions::default()
+        };
+
+        let findings = check(&directory, &rules, &options).unwrap();
+        assert_eq!(
+            findings
+                .iter()
+                .map(|finding| {
+                    (
+                        std::path::Path::new(&finding.path)
+                            .file_name()
+                            .unwrap()
+                            .to_string_lossy(),
+                        finding.line,
+                    )
+                })
+                .collect::<Vec<_>>(),
+            [("a.py".into(), 1), ("a.py".into(), 2), ("b.py".into(), 1)]
         );
 
         std::fs::remove_dir_all(directory).unwrap();

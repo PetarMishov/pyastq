@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
+use rayon::prelude::*;
 use tree_sitter::{Node, Parser, Tree};
 
 use crate::cache::{SearchCache, content_hash};
@@ -16,6 +17,7 @@ pub struct SearchOptions {
     pub max_matches: Option<usize>,
     pub use_cache: bool,
     pub cache_key: Option<String>,
+    pub num_workers: usize,
 }
 
 impl Default for SearchOptions {
@@ -28,10 +30,12 @@ impl Default for SearchOptions {
             max_matches: None,
             use_cache: true,
             cache_key: None,
+            num_workers: 1,
         }
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct SearchContext<'a> {
     pub rule_id: Option<&'a str>,
     pub message: Option<&'a str>,
@@ -53,8 +57,6 @@ pub fn search_path(
         options.changed_only,
     )?;
     let files = collect_python_files(root, &filter)?;
-    let mut parser = python_parser()?;
-    let mut findings = Vec::new();
     let cache_enabled = options.use_cache && !options.changed_only && options.max_matches.is_none();
     let result_key = options.cache_key.as_ref().map(|key| {
         format!(
@@ -67,25 +69,39 @@ pub fn search_path(
     });
     let mut cache = cache_enabled.then(|| SearchCache::load(root));
     let mut current_files = BTreeSet::new();
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(options.num_workers)
+        .build()
+        .map_err(|error| format!("could not create worker pool: {error}"))?;
+    let processed = pool.install(|| {
+        files
+            .par_iter()
+            .map_init(python_parser, |parser, path| {
+                let parser = parser.as_mut().map_err(|error| error.clone())?;
+                let source = std::fs::read_to_string(path)
+                    .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+                let hash = content_hash(source.as_bytes());
+                let file_key = cache
+                    .as_ref()
+                    .map(|cache| cache.file_key(path))
+                    .unwrap_or_default();
+                let mut findings = cache
+                    .as_ref()
+                    .zip(result_key.as_deref())
+                    .and_then(|(cache, result_key)| cache.findings(&file_key, &hash, result_key))
+                    .map(Ok)
+                    .unwrap_or_else(|| {
+                        search_source_with_parser(parser, path, &source, query, &context)
+                    })?;
+                sort_findings(&mut findings);
+                Ok((file_key, hash, findings))
+            })
+            .collect::<Vec<Result<_, String>>>()
+    });
+    let mut findings = Vec::new();
 
-    for path in files {
-        let source = std::fs::read_to_string(&path)
-            .map_err(|error| format!("could not read {}: {error}", path.display()))?;
-        let hash = content_hash(source.as_bytes());
-        let file_key = cache
-            .as_ref()
-            .map(|cache| cache.file_key(&path))
-            .unwrap_or_default();
-        let mut file_findings = cache
-            .as_ref()
-            .zip(result_key.as_deref())
-            .and_then(|(cache, result_key)| cache.findings(&file_key, &hash, result_key))
-            .map(Ok)
-            .unwrap_or_else(|| {
-                search_source_with_parser(&mut parser, &path, &source, query, &context)
-            })?;
-        sort_findings(&mut file_findings);
-
+    for result in processed {
+        let (file_key, hash, file_findings) = result?;
         if let (Some(cache), Some(result_key)) = (&mut cache, result_key.as_ref()) {
             current_files.insert(file_key.clone());
             cache.store(&file_key, &hash, result_key.clone(), file_findings.clone());
@@ -106,7 +122,6 @@ pub fn search_path(
         let _ = cache.save();
     }
 
-    sort_findings(&mut findings);
     Ok(findings)
 }
 
@@ -119,17 +134,13 @@ pub fn search_source(
     search_source_with_parser(&mut python_parser()?, path, source, query, &context)
 }
 
-pub fn validate_python(path: &Path, source: &str) -> Result<(), String> {
-    parse_python(&mut python_parser()?, path, source).map(|_| ())
-}
-
-pub fn search_source_queries(
+pub(crate) fn search_source_queries_with_parser(
+    parser: &mut Parser,
     path: &Path,
     source: &str,
     queries: &[(&Query, SearchContext<'_>)],
 ) -> Result<Vec<Vec<Finding>>, String> {
-    let mut parser = python_parser()?;
-    let tree = parse_python(&mut parser, path, source)?;
+    let tree = parse_python(parser, path, source)?;
     let resolver = NameResolver::new(tree.root_node(), source.as_bytes());
 
     queries
@@ -155,6 +166,14 @@ pub fn search_source_queries(
             Ok(findings)
         })
         .collect()
+}
+
+pub(crate) fn validate_python_with_parser(
+    parser: &mut Parser,
+    path: &Path,
+    source: &str,
+) -> Result<(), String> {
+    parse_python(parser, path, source).map(|_| ())
 }
 
 fn search_source_with_parser(
@@ -226,7 +245,7 @@ fn collect_matches(
     Ok(())
 }
 
-fn python_parser() -> Result<Parser, String> {
+pub(crate) fn python_parser() -> Result<Parser, String> {
     let mut parser = Parser::new();
     parser
         .set_language(&tree_sitter_python::LANGUAGE.into())

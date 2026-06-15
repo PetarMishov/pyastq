@@ -37,6 +37,15 @@ fn check_accepts_a_bare_name_as_valid_python() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+#[test]
+fn num_workers_must_be_positive() {
+    assert_eq!(
+        super::parse_num_workers("0").unwrap_err(),
+        "num-workers must be a positive integer"
+    );
+    assert_eq!(super::parse_num_workers("4").unwrap(), 4);
+}
+
 fn check_command(path: PathBuf, rules: PathBuf) -> Cli {
     Cli {
         command: Command::Check {

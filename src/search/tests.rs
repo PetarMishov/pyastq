@@ -362,6 +362,40 @@ fn caches_unchanged_files_and_invalidates_changed_or_deleted_files() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+#[test]
+fn parallel_search_preserves_sorted_results_and_cache_reuse() {
+    let directory = temporary_directory();
+    let first = directory.join("a.py");
+    let second = directory.join("b.py");
+    std::fs::write(&first, "eval(first)\neval(second)\n").unwrap();
+    std::fs::write(&second, "eval(third)\n").unwrap();
+
+    let query = parse_query("call:eval").unwrap();
+    let serial_options = SearchOptions {
+        cache_key: Some("test|parallel".to_owned()),
+        ..SearchOptions::default()
+    };
+    let serial = search_path(&directory, &query, &serial_options, context(None)).unwrap();
+    let parallel_options = SearchOptions {
+        num_workers: 4,
+        ..serial_options
+    };
+
+    let parallel = search_path(&directory, &query, &parallel_options, context(None)).unwrap();
+    let serial_locations: Vec<_> = serial
+        .iter()
+        .map(|finding| (&finding.path, finding.line, finding.column))
+        .collect();
+    let parallel_locations: Vec<_> = parallel
+        .iter()
+        .map(|finding| (&finding.path, finding.line, finding.column))
+        .collect();
+
+    assert_eq!(parallel_locations, serial_locations);
+    assert_eq!(parallel.len(), 3);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 fn temporary_directory() -> PathBuf {
     let id = TEMPORARY_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed);
     let directory = std::env::temp_dir().join(format!("pyastq-cache-{}-{id}", std::process::id()));
