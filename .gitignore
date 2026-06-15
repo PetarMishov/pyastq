@@ -4,3 +4,4 @@
 /.pyastq-cache.json
 perf.data*
 flamegraph.svg
+TODO.txt

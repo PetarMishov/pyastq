@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use tree_sitter::{Node, Parser};
+use tree_sitter::{Node, Parser, Tree};
 
 use crate::cache::{SearchCache, content_hash};
 use crate::files::{FileFilter, collect_python_files};
@@ -119,15 +119,17 @@ pub fn search_source(
     search_source_with_parser(&mut python_parser()?, path, source, query, &context)
 }
 
+pub fn validate_python(path: &Path, source: &str) -> Result<(), String> {
+    parse_python(&mut python_parser()?, path, source).map(|_| ())
+}
+
 pub fn search_source_queries(
     path: &Path,
     source: &str,
     queries: &[(&Query, SearchContext<'_>)],
 ) -> Result<Vec<Vec<Finding>>, String> {
     let mut parser = python_parser()?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| format!("could not parse {}", path.display()))?;
+    let tree = parse_python(&mut parser, path, source)?;
     let resolver = NameResolver::new(tree.root_node(), source.as_bytes());
 
     queries
@@ -162,6 +164,8 @@ fn search_source_with_parser(
     query: &Query,
     context: &SearchContext<'_>,
 ) -> Result<Vec<Finding>, String> {
+    let tree = parse_python(parser, path, source)?;
+
     if context
         .rule_id
         .is_some_and(|rule_id| file_is_suppressed(source, rule_id))
@@ -169,9 +173,6 @@ fn search_source_with_parser(
         return Ok(Vec::new());
     }
 
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| format!("could not parse {}", path.display()))?;
     let resolver = NameResolver::new(tree.root_node(), source.as_bytes());
     let mut findings = Vec::new();
     collect_matches(
@@ -233,6 +234,37 @@ fn python_parser() -> Result<Parser, String> {
     Ok(parser)
 }
 
+fn parse_python(parser: &mut Parser, path: &Path, source: &str) -> Result<Tree, String> {
+    let tree = parser
+        .parse(source, None)
+        .ok_or_else(|| format!("could not parse {}", path.display()))?;
+    if tree.root_node().has_error() {
+        let error = first_syntax_error(tree.root_node()).unwrap_or_else(|| tree.root_node());
+        let position = error.start_position();
+        let source_line = source.lines().nth(position.row).unwrap_or("").trim();
+        return Err(format!(
+            "{}:{}:{}: invalid Python syntax: {}",
+            path.display(),
+            position.row + 1,
+            position.column + 1,
+            source_line
+        ));
+    }
+    Ok(tree)
+}
+
+fn first_syntax_error(node: Node<'_>) -> Option<Node<'_>> {
+    if node.is_error() || node.is_missing() {
+        return Some(node);
+    }
+    if !node.has_error() {
+        return None;
+    }
+
+    let mut cursor = node.walk();
+    node.children(&mut cursor).find_map(first_syntax_error)
+}
+
 fn file_is_suppressed(source: &str, rule_id: &str) -> bool {
     source
         .lines()
@@ -260,3 +292,6 @@ fn directive_matches(line: &str, directive: &str, rule_id: &str) -> bool {
             .split([',', ' ', '\t'])
             .any(|candidate| candidate == rule_id)
 }
+
+#[cfg(test)]
+mod tests;

@@ -7,7 +7,9 @@ use crate::cache::{SearchCache, content_hash};
 use crate::files::{FileFilter, collect_python_files};
 use crate::query::{Query, parse_query};
 use crate::report::{Finding, sort_findings};
-use crate::search::{SearchContext, SearchOptions, search_source, search_source_queries};
+use crate::search::{
+    SearchContext, SearchOptions, search_source, search_source_queries, validate_python,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct RuleFile {
@@ -209,6 +211,10 @@ pub fn check(
             .enumerate()
             .filter_map(|(index, filter)| filter.accepts(relative).then_some(index))
             .collect();
+        if applicable.is_empty() {
+            validate_python(&path, &source)?;
+            continue;
+        }
         let mut missing = Vec::new();
 
         for &index in &applicable {
@@ -428,6 +434,33 @@ mod tests {
         let cached_file = &cache["files"]["example.py"];
         assert!(cached_file["hash"].is_string());
         assert_eq!(cached_file["results"].as_object().unwrap().len(), 2);
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn check_rejects_invalid_python() {
+        let directory = temporary_directory("invalid-python");
+        let source = directory.join("invalid.py");
+        std::fs::write(&source, "def broken(:\n    pass\n").unwrap();
+        let rules: RuleFile = toml::from_str(
+            r#"
+                [[rules]]
+                id = "no-eval"
+                query = "call:eval"
+                message = "Avoid eval"
+            "#,
+        )
+        .unwrap();
+
+        let error = check(&source, &rules, &SearchOptions::default()).unwrap_err();
+        assert_eq!(
+            error,
+            format!(
+                "{}:1:12: invalid Python syntax: def broken(:",
+                source.display()
+            )
+        );
 
         std::fs::remove_dir_all(directory).unwrap();
     }

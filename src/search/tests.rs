@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use super::{SearchContext, SearchOptions, search_path, search_source};
 use crate::query::parse_query;
-use crate::search::{SearchContext, SearchOptions, search_path, search_source};
 
 static TEMPORARY_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -292,6 +292,37 @@ def fetch(requests):
     let query = parse_query("call:requests.get").unwrap();
     let findings = search_source(Path::new("example.py"), source, &query, context(None)).unwrap();
     assert_eq!(findings.len(), 2);
+}
+
+#[test]
+fn rejects_invalid_python_with_its_location_and_source_line() {
+    let query = parse_query("call:eval").unwrap();
+    let error = search_source(
+        Path::new("invalid.py"),
+        "def broken(:\n    pass\n",
+        &query,
+        context(None),
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        error,
+        "invalid.py:1:12: invalid Python syntax: def broken(:"
+    );
+}
+
+#[test]
+fn invalid_python_cannot_be_hidden_by_a_file_suppression() {
+    let query = parse_query("call:eval").unwrap();
+    let error = search_source(
+        Path::new("invalid.py"),
+        "# pyastq: ignore-file no-eval\ndef broken(:\n",
+        &query,
+        context(Some("no-eval")),
+    )
+    .unwrap_err();
+
+    assert!(error.starts_with("invalid.py:2:"));
 }
 
 #[test]

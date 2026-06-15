@@ -179,3 +179,6 @@ impl From<SearchArgs> for SearchOptions {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
