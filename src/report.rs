@@ -29,6 +29,15 @@ pub struct Finding {
     pub severity: Option<String>,
 }
 
+pub fn sort_findings(findings: &mut [Finding]) {
+    findings.sort_by(|left, right| {
+        left.path
+            .cmp(&right.path)
+            .then(left.line.cmp(&right.line))
+            .then(left.column.cmp(&right.column))
+    });
+}
+
 pub fn print_findings(
     findings: &[Finding],
     format: OutputFormat,
@@ -183,7 +192,44 @@ fn percent_encode_path(path: &str) -> String {
 mod tests {
     use std::path::Path;
 
-    use super::{Finding, sarif_log};
+    use super::{Finding, sarif_log, sort_findings};
+
+    fn finding(path: &str, line: usize, column: usize) -> Finding {
+        Finding {
+            path: path.to_owned(),
+            line,
+            column,
+            text: String::new(),
+            rule_id: None,
+            message: None,
+            severity: None,
+        }
+    }
+
+    #[test]
+    fn sorts_findings_by_path_line_and_column() {
+        let mut findings = vec![
+            finding("src/z.py", 1, 1),
+            finding("src/a.py", 10, 1),
+            finding("src/a.py", 2, 8),
+            finding("src/a.py", 2, 3),
+        ];
+
+        sort_findings(&mut findings);
+
+        assert_eq!(
+            findings
+                .iter()
+                .map(|finding| (finding.path.as_str(), finding.line, finding.column))
+                .collect::<Vec<_>>(),
+            [
+                ("src/a.py", 2, 3),
+                ("src/a.py", 2, 8),
+                ("src/a.py", 10, 1),
+                ("src/z.py", 1, 1),
+            ]
+        );
+    }
 
     #[test]
     fn emits_sarif_2_1_0_with_rules_and_locations() {

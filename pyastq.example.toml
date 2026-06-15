@@ -1,145 +1,106 @@
-# A strict, high-signal baseline for production Python code.
+# Rules for the PyPI release-readiness example.
 #
-# These rules intentionally focus on patterns that `pyastq` can identify
-# structurally without type inference or data-flow analysis.
-
-exclude = [
-    "**/generated/**",
-    "**/migrations/**",
-    "**/.venv/**",
-    "**/venv/**",
-    "**/vendor/**",
-]
-
-[[rules]]
-id = "no-eval"
-query = "call:eval"
-message = "Do not execute dynamic Python with eval(); parse a constrained format instead."
-severity = "error"
-valid = ["json.loads(value)", "ast.literal_eval(value)"]
-invalid = ["eval(value)"]
+# Try:
+#   cargo run -- check pyastq.example.py --rules pyastq.example.toml
+#   cargo run -- test-rules --rules pyastq.example.toml
+#   cargo run -- find pyastq.example.py \
+#     'class:PackageInspector -> function:LoadPackage -> call:requests.get'
+#
+# The rules intentionally demonstrate exact matching, import alias resolution,
+# descendant chains, argument predicates, negation, regexes, and suppressions.
+# Each rule has both a caught and a clean counterpart in pyastq.example.py.
 
 [[rules]]
-id = "no-exec"
-query = "call:exec"
-message = "Do not execute dynamic Python with exec()."
-severity = "error"
-valid = ["run_registered_handler(name)"]
-invalid = ["exec(source)"]
-
-[[rules]]
-id = "no-os-system"
-query = "call:os.system"
-message = "Avoid shell execution through os.system(); use subprocess with an argument list."
-severity = "error"
-valid = ['subprocess.run(["git", "status"], check=True)']
-invalid = ['os.system("git status")']
-
-[[rules]]
-id = "no-subprocess-shell"
-query = "call:regex:^subprocess\\.[A-Za-z_]+$ AND argument:shell:True"
-message = "Do not invoke subprocesses with shell=True; pass an argument list directly."
-severity = "error"
-valid = ['subprocess.run(["git", "status"], check=True)']
-invalid = ['subprocess.run(command, shell=True)']
-
-[[rules]]
-id = "no-pickle-deserialization"
-query = "call:regex:^pickle\\.loads?$"
-message = "Do not deserialize untrusted data with pickle."
-severity = "error"
-valid = ["json.loads(payload)"]
-invalid = ["pickle.loads(payload)", "pickle.load(stream)"]
-
-[[rules]]
-id = "safe-yaml-load"
-query = "call:yaml.load AND NOT argument:Loader:*"
-message = "yaml.load() must specify a safe Loader; prefer yaml.safe_load()."
-severity = "error"
-valid = ["yaml.safe_load(document)", "yaml.load(document, Loader=yaml.SafeLoader)"]
-invalid = ["yaml.load(document)"]
-
-[[rules]]
-id = "request-timeout"
-query = "call:regex:^requests\\.[dgohpr][a-z]*$ AND NOT argument:timeout:*"
-message = "HTTP requests must specify a timeout."
+id = "pypi-request-timeout"
+# Caught: PackageInspector.LoadPackage; clean: PackageInspector.load_package.
+query = "call:requests.get AND NOT argument:timeout:*"
+message = "PyPI requests must specify an explicit timeout."
 severity = "error"
 valid = [
-    'requests.get(url, timeout=10)',
-    'requests.post(url, json=payload, timeout=(3.05, 30))',
+    "import requests as http\nhttp.get(url, timeout=10)",
+    "requests.get(url, timeout=(3.05, 30))",
 ]
-invalid = ["requests.get(url)", "requests.post(url, json=payload)"]
+invalid = [
+    "import requests as http\nhttp.get(url)",
+    "requests.get(url)",
+]
 
 [[rules]]
-id = "no-tempfile-mktemp"
-query = "call:tempfile.mktemp"
-message = "tempfile.mktemp() is race-prone; use NamedTemporaryFile or mkstemp()."
-severity = "error"
-valid = ["tempfile.NamedTemporaryFile()", "tempfile.mkstemp()"]
-invalid = ["tempfile.mktemp()"]
-
-[[rules]]
-id = "no-md5"
-query = "call:hashlib.md5"
-message = "MD5 is not acceptable for security-sensitive hashing."
+id = "legacy-package-loader"
+# Caught: LoadPackage; clean: load_package.
+query = "class:PackageInspector -> function:LoadPackage -> call:requests.get"
+message = "Remove the legacy package loader and use load_package()."
 severity = "warning"
-valid = ["hashlib.sha256(value).hexdigest()", "hashlib.blake2b(value).digest()"]
-invalid = ["hashlib.md5(value).hexdigest()"]
-
-[[rules]]
-id = "no-sha1"
-query = "call:hashlib.sha1"
-message = "SHA-1 is not acceptable for security-sensitive hashing."
-severity = "warning"
-valid = ["hashlib.sha256(value).hexdigest()", "hashlib.blake2b(value).digest()"]
-invalid = ["hashlib.sha1(value).digest()"]
-
-[[rules]]
-id = "no-breakpoint"
-query = "call:breakpoint"
-message = "Remove interactive debugger calls before committing."
-severity = "error"
-valid = ["logger.debug(value)"]
-invalid = ["breakpoint()"]
-
-[[rules]]
-id = "no-set-trace"
-query = "call:regex:^[a-z]*pdb\\.set_trace$"
-message = "Remove interactive debugger calls before committing."
-severity = "error"
-valid = ["logger.debug(value)"]
-invalid = ["pdb.set_trace()", "ipdb.set_trace()"]
-
-[[rules]]
-id = "no-print"
-query = "call:print"
-message = "Use structured logging instead of print() in production code."
-severity = "warning"
-exclude = ["tests/**", "**/tests/**", "scripts/**", "**/scripts/**"]
-valid = ['logger.info("started")']
-invalid = ['print("started")']
-
-[[rules]]
-id = "deprecated-logging-warn"
-query = "call:regex:^[A-Za-z_][A-Za-z0-9_]*\\.warn$"
-message = "Use warning() instead of the deprecated warn() logging method."
-severity = "warning"
-valid = ['logger.warning("retrying")']
-invalid = ['logger.warn("retrying")', 'logging.warn("retrying")']
-
-[[rules]]
-id = "test-function-name"
-query = "function:regex:^test[^_]"
-message = "Test function names must begin with test_."
-severity = "warning"
-include = ["tests/**/*.py", "**/tests/**/*.py", "test_*.py", "**/test_*.py"]
-valid = ["def test_saves_user():\n    pass"]
-invalid = ["def testSavesUser():\n    pass"]
+valid = [
+    "class PackageInspector:\n    def load_package(self):\n        requests.get(url, timeout=10)",
+]
+invalid = [
+    "class PackageInspector:\n    def LoadPackage(self):\n        requests.get(url)",
+]
 
 [[rules]]
 id = "method-name-case"
+# Caught: LoadPackage; clean: load_package.
 query = "function:regex:^[A-Z] AND ancestor(class:*)"
 message = "Method names must start with a lowercase letter."
 severity = "warning"
-valid = ["class User:\n    def save(self):\n        pass"]
-invalid = ["class User:\n    def Save(self):\n        pass"]
+valid = [
+    "class PackageInspector:\n    def load_package(self):\n        pass",
+    "def TopLevelFactory():\n    pass",
+]
+invalid = [
+    "class PackageInspector:\n    def LoadPackage(self):\n        pass",
+]
+
+[[rules]]
+id = "no-shell-release-hooks"
+# Caught: run_legacy_hook; clean: run_hook and current_revision.
+query = "call:subprocess.run AND argument:shell:True"
+message = "Release hooks must use an argument list instead of shell=True."
+severity = "error"
+valid = [
+    'subprocess.run(["git", "status"], check=True)',
+]
+invalid = [
+    "subprocess.run(command, shell=True, check=True)",
+]
+
+[[rules]]
+id = "no-dynamic-overrides"
+# Caught: parse_legacy_overrides; clean: parse_json_overrides.
+query = "call:eval"
+message = "Parse release overrides as JSON instead of evaluating Python code."
+severity = "error"
+valid = [
+    "json.loads(value)",
+]
+invalid = [
+    "eval(value)",
+]
+
+[[rules]]
+id = "weak-release-digest"
+# Caught: legacy_artifact_id; clean: artifact_sha256.
+# suppressed_partner_artifact_id also demonstrates a targeted exception.
+query = "call:hashlib.md5"
+message = "Release artifacts should use SHA-256 or a stronger digest."
+severity = "warning"
+valid = [
+    "hashlib.sha256(data).hexdigest()",
+]
+invalid = [
+    "hashlib.md5(data).hexdigest()",
+]
+
+[[rules]]
+id = "git-command-must-check"
+# Caught: legacy_revision; clean: current_revision.
+query = "call:subprocess.run AND argument:0:contains:git AND NOT argument:check:True"
+message = "Git subprocesses must fail when the command exits unsuccessfully."
+severity = "error"
+valid = [
+    'subprocess.run(["git", "status"], check=True)',
+]
+invalid = [
+    'subprocess.run(["git", "status"])',
+]

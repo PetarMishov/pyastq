@@ -6,7 +6,7 @@ use tree_sitter::{Node, Parser};
 use crate::cache::{SearchCache, content_hash};
 use crate::files::{FileFilter, collect_python_files};
 use crate::query::{NameResolver, Query, matches_query};
-use crate::report::Finding;
+use crate::report::{Finding, sort_findings};
 
 pub struct SearchOptions {
     pub includes: Vec<String>,
@@ -76,7 +76,7 @@ pub fn search_path(
             .as_ref()
             .map(|cache| cache.file_key(&path))
             .unwrap_or_default();
-        let file_findings = cache
+        let mut file_findings = cache
             .as_ref()
             .zip(result_key.as_deref())
             .and_then(|(cache, result_key)| cache.findings(&file_key, &hash, result_key))
@@ -84,6 +84,7 @@ pub fn search_path(
             .unwrap_or_else(|| {
                 search_source_with_parser(&mut parser, &path, &source, query, &context)
             })?;
+        sort_findings(&mut file_findings);
 
         if let (Some(cache), Some(result_key)) = (&mut cache, result_key.as_ref()) {
             current_files.insert(file_key.clone());
@@ -105,6 +106,7 @@ pub fn search_path(
         let _ = cache.save();
     }
 
+    sort_findings(&mut findings);
     Ok(findings)
 }
 
@@ -147,6 +149,7 @@ pub fn search_source_queries(
                 &resolver,
                 &mut findings,
             )?;
+            sort_findings(&mut findings);
             Ok(findings)
         })
         .collect()
@@ -180,6 +183,7 @@ fn search_source_with_parser(
         &resolver,
         &mut findings,
     )?;
+    sort_findings(&mut findings);
     Ok(findings)
 }
 

@@ -1,175 +1,205 @@
-"""Example input for ``pyastq.example.toml``.
+"""Build a small release-readiness report for packages published on PyPI.
 
-This module intentionally mixes code that should be reported with similar code
-that should remain clean. It is meant to be analyzed, not executed.
+The normal path is useful: it queries package metadata, records the current Git
+revision, optionally hashes a local distribution artifact, and prints JSON.
+
+The module also contains a few believable legacy shortcuts for
+``pyastq.example.toml`` to find. They are intentionally retained so the file can
+demonstrate structural matching, import alias resolution, descendant chains,
+argument predicates, negation, and targeted suppressions.
 """
 
-import ast
+from __future__ import annotations
+
+import argparse
 import hashlib
 import json
 import logging
-import os
-import pdb
-import pickle
 import subprocess
-import tempfile
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
-import requests
-import yaml
+import requests as http
 
 
-DEFAULT_TIMEOUT = 10
-logger = logging.getLogger(__name__)
-
-
-def parse_json_document(value: str) -> Any:
-    """Safe parsing: this is not a call to eval."""
-    return json.loads(value)
-
-
-def parse_python_literal(value: str) -> Any:
-    """Safe parsing: literal_eval must not match the exact call name eval."""
-    return ast.literal_eval(value)
-
-
-def evaluate_expression(value: str) -> Any:
-    """Violation: the no-eval rule should report this call."""
-    return eval(value)
-
-
-def evaluate_trusted_fixture(value: str) -> Any:
-    """Suppressed exception: this eval should not be reported."""
-    return eval(value)  # pyastq: ignore no-eval
-
-
-def fetch_profile(user_id: int) -> dict[str, Any]:
-    """Violation: requests.get has no timeout keyword."""
-    response = requests.get(f"https://example.test/users/{user_id}")
-    response.raise_for_status()
-    return response.json()
-
-
-def fetch_settings(user_id: int) -> dict[str, Any]:
-    """Compliant: a timeout keyword is present."""
-    response = requests.get(
-        f"https://example.test/users/{user_id}/settings",
-        timeout=DEFAULT_TIMEOUT,
-    )
-    response.raise_for_status()
-    return response.json()
-
-
-def fetch_healthcheck() -> bool:
-    """Compliant: timeout=None still satisfies this structural rule."""
-    response = requests.get("https://example.test/health", timeout=None)
-    return response.ok
-
-
-def fetch_with_options(url: str, options: dict[str, Any]) -> requests.Response:
-    """Violation: **options may contain a timeout, but no timeout keyword exists."""
-    return requests.get(url, **options)
-
-
-def fetch_ignored_endpoint(url: str) -> requests.Response:
-    """Suppressed exception for the request-timeout rule only."""
-    # pyastq: ignore request-timeout
-    return requests.get(url)
-
-
-class MemoryCache:
-    def __init__(self) -> None:
-        self._values: dict[str, Any] = {}
-
-    def get(self, key: str) -> Any:
-        """Compliant: this method is not requests.get."""
-        return self._values.get(key)
-
-    def save(self, key: str, value: Any) -> None:
-        """Compliant: method name starts with a lowercase letter."""
-        self._values[key] = value
-
-    def Clear(self) -> None:
-        """Violation: uppercase method under a class."""
-        self._values.clear()
-
-    def export_legacy(self) -> dict[str, Any]:
-        """Compliant lowercase compatibility method."""
-        return dict(self._values)
-
-
-class LegacyAdapter:
-    # pyastq: ignore method-name-case
-    def Export(self) -> dict[str, Any]:
-        """Suppressed exception: retained for an external legacy API."""
-        return {}
+PYPI_URL = "https://pypi.org/pypi/{package}/json"
+DEFAULT_TIMEOUT = 10.0
+logger = logging.getLogger("release-report")
 
 
 @dataclass
-class ApiClient:
-    base_url: str
-    timeout: float = DEFAULT_TIMEOUT
-
-    def build_url(self, path: str) -> str:
-        """Compliant lowercase method."""
-        return f"{self.base_url.rstrip('/')}/{path.lstrip('/')}"
-
-    def load(self, path: str) -> requests.Response:
-        """Compliant request and compliant method name."""
-        return requests.get(self.build_url(path), timeout=self.timeout)
-
-    def LoadWithoutTimeout(self, path: str) -> requests.Response:
-        """Two violations: uppercase method and missing request timeout."""
-        return requests.get(self.build_url(path))
+class PackageStatus:
+    name: str
+    latest_version: str
+    requires_python: str | None
+    project_url: str | None
 
 
-def TopLevelFactory(base_url: str) -> ApiClient:
-    """Compliant for method-name-case: this function is not inside a class."""
-    return ApiClient(base_url)
+class PackageInspector:
+    """Fetch package metadata from PyPI."""
+
+    def __init__(self, timeout: float = DEFAULT_TIMEOUT) -> None:
+        self.timeout = timeout
+
+    def load_package(self, package: str) -> PackageStatus:
+        """Clean: the request has a timeout and the method name is lowercase."""
+        response = http.get(PYPI_URL.format(package=package), timeout=self.timeout)
+        response.raise_for_status()
+        metadata = response.json()["info"]
+        return PackageStatus(
+            name=metadata["name"],
+            latest_version=metadata["version"],
+            requires_python=metadata.get("requires_python"),
+            project_url=metadata.get("project_url"),
+        )
+
+    def LoadPackage(self, package: str) -> PackageStatus:
+        """Caught: uppercase method, missing timeout, and legacy descendant chain."""
+        response = http.get(PYPI_URL.format(package=package))
+        response.raise_for_status()
+        metadata = response.json()["info"]
+        return PackageStatus(
+            name=metadata["name"],
+            latest_version=metadata["version"],
+            requires_python=metadata.get("requires_python"),
+            project_url=metadata.get("project_url"),
+        )
 
 
-class Parser:
-    def parse(self, value: str) -> Any:
-        """Compliant despite containing the substring 'eval' in a local name."""
-        evaluated_default = {"value": value}
-        return evaluated_default
+def current_revision() -> str:
+    """Clean: the Git command checks its exit status and does not use a shell."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
 
 
-def execute_dynamic_source(source: str) -> None:
-    """Violation: dynamic code execution is prohibited."""
-    exec(source)
+def legacy_revision() -> str:
+    """Caught: this Git command does not use check=True."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
 
 
-def run_shell_command(command: str) -> None:
-    """Two command-execution violations."""
-    os.system(command)
+def artifact_sha256(path: Path) -> str:
+    """Clean: calculate a release artifact checksum with SHA-256."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def legacy_artifact_id(path: Path) -> str:
+    """Caught: compatibility identifier using the obsolete MD5 digest."""
+    return hashlib.md5(path.read_bytes()).hexdigest()
+
+
+def suppressed_partner_artifact_id(path: Path) -> str:
+    """Not reported: a targeted suppression documents a required exception."""
+    return hashlib.md5(path.read_bytes()).hexdigest()  # pyastq: ignore weak-release-digest
+
+
+def parse_labels(values: list[str]) -> dict[str, str]:
+    """Parse repeated KEY=VALUE labels from the command line."""
+    labels: dict[str, str] = {}
+    for value in values:
+        key, separator, label = value.partition("=")
+        if not separator or not key:
+            raise ValueError(f"invalid label {value!r}; expected KEY=VALUE")
+        labels[key] = label
+    return labels
+
+
+def parse_legacy_overrides(expression: str) -> dict[str, Any]:
+    """Caught: parse the obsolete Python-expression override format."""
+    overrides = eval(expression)
+    if not isinstance(overrides, dict):
+        raise ValueError("legacy overrides must evaluate to a dictionary")
+    return overrides
+
+
+def parse_json_overrides(document: str) -> dict[str, Any]:
+    """Clean: parse overrides as constrained JSON instead of evaluating code."""
+    overrides = json.loads(document)
+    if not isinstance(overrides, dict):
+        raise ValueError("JSON overrides must contain an object")
+    return overrides
+
+
+def run_legacy_hook(command: str) -> None:
+    """Caught: run an old user-provided release hook through a shell."""
     subprocess.run(command, shell=True, check=True)
 
 
-def decode_legacy_payload(payload: bytes) -> Any:
-    """Violation: pickle can execute code while deserializing."""
-    return pickle.loads(payload)
+def run_hook(command: list[str]) -> None:
+    """Clean: execute a release hook as an argument list and check its status."""
+    subprocess.run(command, check=True)
 
 
-def parse_yaml_document(document: str) -> Any:
-    """Violation: yaml.load has no explicit Loader."""
-    return yaml.load(document)
+def build_report(
+    packages: list[str],
+    artifact: Path | None,
+    labels: dict[str, str],
+    use_legacy_client: bool = False,
+) -> dict[str, Any]:
+    inspector = PackageInspector()
+    load = inspector.LoadPackage if use_legacy_client else inspector.load_package
+    package_statuses = [asdict(load(package)) for package in packages]
+    report: dict[str, Any] = {
+        "revision": current_revision(),
+        "packages": package_statuses,
+        "labels": labels,
+    }
+    if artifact is not None:
+        report["artifact"] = {
+            "path": str(artifact),
+            "sha256": artifact_sha256(artifact),
+        }
+    return report
 
 
-def allocate_temporary_name() -> str:
-    """Violation: mktemp has a race between name creation and use."""
-    return tempfile.mktemp()
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Create a JSON release-readiness report using PyPI metadata."
+    )
+    parser.add_argument("packages", nargs="+", help="PyPI package names to inspect")
+    parser.add_argument("--artifact", type=Path, help="Distribution artifact to hash")
+    parser.add_argument("--label", action="append", default=[], metavar="KEY=VALUE")
+    parser.add_argument("--output", type=Path, help="Write JSON to this path")
+    parser.add_argument("--overrides", help="JSON object merged into report labels")
+    parser.add_argument("--legacy-client", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--legacy-revision", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--legacy-hook", help=argparse.SUPPRESS)
+    parser.add_argument("--legacy-overrides", help=argparse.SUPPRESS)
+    return parser.parse_args()
 
 
-def legacy_digests(value: bytes) -> tuple[str, str]:
-    """Two weak-hash violations."""
-    return hashlib.md5(value).hexdigest(), hashlib.sha1(value).hexdigest()
+def main() -> int:
+    args = parse_args()
+    labels = parse_labels(args.label)
+    if args.overrides:
+        labels.update(parse_json_overrides(args.overrides))
+    if args.legacy_overrides:
+        labels.update(parse_legacy_overrides(args.legacy_overrides))
+
+    report = build_report(args.packages, args.artifact, labels, args.legacy_client)
+    if args.legacy_revision:
+        report["revision"] = legacy_revision()
+    rendered = json.dumps(report, indent=2, sort_keys=True)
+    if args.output:
+        args.output.write_text(rendered + "\n", encoding="utf-8")
+        logger.info("wrote release report to %s", args.output)
+    else:
+        print(rendered)
+
+    if args.legacy_hook:
+        run_legacy_hook(args.legacy_hook)
+    return 0
 
 
-def debug_user(user_id: int) -> None:
-    """Debugger and production-output violations."""
-    print(f"debugging user {user_id}")
-    logger.warn("interactive debugging enabled")
-    pdb.set_trace()
-    breakpoint()
+if __name__ == "__main__":
+    raise SystemExit(main())

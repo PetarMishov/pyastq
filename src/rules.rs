@@ -6,7 +6,7 @@ use serde::Deserialize;
 use crate::cache::{SearchCache, content_hash};
 use crate::files::{FileFilter, collect_python_files};
 use crate::query::{Query, parse_query};
-use crate::report::Finding;
+use crate::report::{Finding, sort_findings};
 use crate::search::{SearchContext, SearchOptions, search_source, search_source_queries};
 
 #[derive(Debug, Deserialize)]
@@ -264,6 +264,7 @@ pub fn check(
     }
 
     let mut findings: Vec<_> = findings_by_rule.into_iter().flatten().collect();
+    sort_findings(&mut findings);
     if let Some(maximum) = base_options.max_matches {
         findings.truncate(maximum);
     }
@@ -427,6 +428,41 @@ mod tests {
         let cached_file = &cache["files"]["example.py"];
         assert!(cached_file["hash"].is_string());
         assert_eq!(cached_file["results"].as_object().unwrap().len(), 2);
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn returns_findings_in_location_order_instead_of_rule_order() {
+        let directory = temporary_directory("finding-order");
+        std::fs::write(
+            directory.join("example.py"),
+            "print('first')\neval('second')\n",
+        )
+        .unwrap();
+        let rules: RuleFile = toml::from_str(
+            r#"
+                [[rules]]
+                id = "no-eval"
+                query = "call:eval"
+                message = "Avoid eval"
+
+                [[rules]]
+                id = "no-print"
+                query = "call:print"
+                message = "Avoid print"
+            "#,
+        )
+        .unwrap();
+
+        let findings = check(&directory, &rules, &SearchOptions::default()).unwrap();
+        assert_eq!(
+            findings
+                .iter()
+                .map(|finding| (finding.line, finding.rule_id.as_deref()))
+                .collect::<Vec<_>>(),
+            [(1, Some("no-print")), (2, Some("no-eval"))]
+        );
 
         std::fs::remove_dir_all(directory).unwrap();
     }
