@@ -277,7 +277,7 @@ fn rule_result_key(
     global_excludes: &[String],
 ) -> String {
     format!(
-        "check|{}|{}|{}|{}|root={}|include={:?}|rule_include={:?}|exclude={:?}|rule_exclude={:?}",
+        "resolver-v1|check|{}|{}|{}|{}|root={}|include={:?}|rule_include={:?}|exclude={:?}|rule_exclude={:?}",
         compiled_rule.rule.id,
         compiled_rule.rule.query,
         compiled_rule.rule.message,

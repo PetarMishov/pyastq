@@ -5,7 +5,7 @@ use tree_sitter::{Node, Parser};
 
 use crate::cache::{SearchCache, content_hash};
 use crate::files::{FileFilter, collect_python_files};
-use crate::query::{Query, matches_query};
+use crate::query::{NameResolver, Query, matches_query};
 use crate::report::Finding;
 
 pub struct SearchOptions {
@@ -58,7 +58,7 @@ pub fn search_path(
     let cache_enabled = options.use_cache && !options.changed_only && options.max_matches.is_none();
     let result_key = options.cache_key.as_ref().map(|key| {
         format!(
-            "{key}|root={}|include={:?}|required={:?}|exclude={:?}",
+            "resolver-v1|{key}|root={}|include={:?}|required={:?}|exclude={:?}",
             root.display(),
             options.includes,
             options.required_includes,
@@ -126,6 +126,7 @@ pub fn search_source_queries(
     let tree = parser
         .parse(source, None)
         .ok_or_else(|| format!("could not parse {}", path.display()))?;
+    let resolver = NameResolver::new(tree.root_node(), source.as_bytes());
 
     queries
         .iter()
@@ -143,6 +144,7 @@ pub fn search_source_queries(
                 source,
                 query,
                 context,
+                &resolver,
                 &mut findings,
             )?;
             Ok(findings)
@@ -167,6 +169,7 @@ fn search_source_with_parser(
     let tree = parser
         .parse(source, None)
         .ok_or_else(|| format!("could not parse {}", path.display()))?;
+    let resolver = NameResolver::new(tree.root_node(), source.as_bytes());
     let mut findings = Vec::new();
     collect_matches(
         tree.root_node(),
@@ -174,6 +177,7 @@ fn search_source_with_parser(
         source,
         query,
         context,
+        &resolver,
         &mut findings,
     )?;
     Ok(findings)
@@ -185,9 +189,10 @@ fn collect_matches(
     source: &str,
     query: &Query,
     context: &SearchContext<'_>,
+    resolver: &NameResolver,
     findings: &mut Vec<Finding>,
 ) -> Result<(), String> {
-    if matches_query(node, source.as_bytes(), query) {
+    if matches_query(node, source.as_bytes(), query, resolver) {
         let position = node.start_position();
         let line = position.row + 1;
         if !context
@@ -211,7 +216,7 @@ fn collect_matches(
 
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        collect_matches(child, path, source, query, context, findings)?;
+        collect_matches(child, path, source, query, context, resolver, findings)?;
     }
     Ok(())
 }

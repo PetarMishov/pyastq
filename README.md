@@ -112,6 +112,23 @@ regex:^[A-Z]              regular expression
 Quote a complete query when invoking it from a shell. Quotes inside a value
 allow spaces, for example `argument:0:"hello world"`.
 
+### Python Name Resolution
+
+Call patterns follow Python imports and aliases within each file:
+
+```python
+import requests as r
+from requests import post as send
+
+r.get(url)
+send(url)
+```
+
+`call:requests.get` matches `r.get(url)`, and `call:requests.post` matches
+`send(url)`. Resolution respects lexical scopes and known shadowing by
+parameters, assignments, definitions, loop targets, and similar bindings.
+Literal call matching remains available when no import relationship is known.
+
 ## Automation
 
 `find` returns `0` unless parsing or execution fails. Use `--fail-on-match` to

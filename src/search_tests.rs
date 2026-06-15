@@ -142,6 +142,159 @@ fn matches_imports_and_value_predicates() {
 }
 
 #[test]
+fn resolves_import_aliases_and_from_imports_for_calls() {
+    let source = "\
+import requests as r
+from requests import get
+from requests import post as send
+
+r.get(first)
+get(second)
+send(third)
+";
+    let get_query = parse_query("call:requests.get").unwrap();
+    let findings =
+        search_source(Path::new("example.py"), source, &get_query, context(None)).unwrap();
+    assert_eq!(
+        findings
+            .iter()
+            .map(|finding| finding.text.as_str())
+            .collect::<Vec<_>>(),
+        ["r.get(first)", "get(second)"]
+    );
+
+    let post_query = parse_query("call:requests.post").unwrap();
+    let findings =
+        search_source(Path::new("example.py"), source, &post_query, context(None)).unwrap();
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].text, "send(third)");
+}
+
+#[test]
+fn imported_names_are_not_resolved_when_shadowed() {
+    let source = "\
+import requests
+import requests as r
+
+requests.get(before)
+r.get(before_alias)
+
+def fetch(requests, r):
+    requests.get(parameter)
+    r.get(alias_parameter)
+
+requests = client
+r = client
+requests.get(after)
+r.get(after_alias)
+";
+    let query = parse_query("call:requests.get").unwrap();
+    let findings = search_source(Path::new("example.py"), source, &query, context(None)).unwrap();
+    assert_eq!(
+        findings
+            .iter()
+            .map(|finding| finding.text.as_str())
+            .collect::<Vec<_>>(),
+        ["requests.get(before)", "r.get(before_alias)"]
+    );
+}
+
+#[test]
+fn function_local_bindings_shadow_imports_for_the_whole_scope() {
+    let source = "\
+import requests
+
+def fetch():
+    requests.get(before_assignment)
+    requests = client
+";
+    let query = parse_query("call:requests.get").unwrap();
+    let findings = search_source(Path::new("example.py"), source, &query, context(None)).unwrap();
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn resolves_function_local_imports_and_skips_class_namespaces_for_methods() {
+    let source = "\
+import requests as module_requests
+
+def fetch():
+    from requests import get as fetch_url
+    fetch_url(local)
+
+class Client:
+    import other_requests as module_requests
+
+    def fetch(self):
+        module_requests.get(module)
+";
+    let requests_query = parse_query("call:requests.get").unwrap();
+    let findings = search_source(
+        Path::new("example.py"),
+        source,
+        &requests_query,
+        context(None),
+    )
+    .unwrap();
+    assert_eq!(
+        findings
+            .iter()
+            .map(|finding| finding.text.as_str())
+            .collect::<Vec<_>>(),
+        ["fetch_url(local)", "module_requests.get(module)"]
+    );
+
+    let class_import_query = parse_query("call:other_requests.get").unwrap();
+    let findings = search_source(
+        Path::new("example.py"),
+        source,
+        &class_import_query,
+        context(None),
+    )
+    .unwrap();
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn comprehension_targets_do_not_leak_and_global_declarations_use_module_imports() {
+    let source = "\
+import requests
+
+[requests.get(item) for requests in clients]
+requests.get(after_comprehension)
+
+def fetch():
+    global requests
+    requests.get(global_name)
+";
+    let query = parse_query("call:requests.get").unwrap();
+    let findings = search_source(Path::new("example.py"), source, &query, context(None)).unwrap();
+    assert_eq!(
+        findings
+            .iter()
+            .map(|finding| finding.text.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "requests.get(after_comprehension)",
+            "requests.get(global_name)"
+        ]
+    );
+}
+
+#[test]
+fn literal_call_queries_still_work_without_known_imports() {
+    let source = "\
+requests.get(url)
+
+def fetch(requests):
+    requests.get(other)
+";
+    let query = parse_query("call:requests.get").unwrap();
+    let findings = search_source(Path::new("example.py"), source, &query, context(None)).unwrap();
+    assert_eq!(findings.len(), 2);
+}
+
+#[test]
 fn caches_unchanged_files_and_invalidates_changed_or_deleted_files() {
     let directory = temporary_directory();
     let first = directory.join("first.py");

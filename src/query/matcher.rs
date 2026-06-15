@@ -4,40 +4,56 @@ use super::model::{
     ArgumentKey, Comparison, Expression, NodePattern, PatternKind, Query, Relationship,
     ValuePattern,
 };
+use super::resolver::{NameResolution, NameResolver};
 
-pub fn matches_query(node: Node, source: &[u8], query: &Query) -> bool {
-    matches_node(node, source, &query.anchor)
+pub fn matches_query(node: Node, source: &[u8], query: &Query, resolver: &NameResolver) -> bool {
+    matches_node(node, source, &query.anchor, resolver)
         && query
             .condition
             .as_ref()
-            .is_none_or(|condition| matches_expression(node, source, condition))
+            .is_none_or(|condition| matches_expression(node, source, condition, resolver))
 }
 
-fn matches_expression(node: Node, source: &[u8], expression: &Expression) -> bool {
+fn matches_expression(
+    node: Node,
+    source: &[u8],
+    expression: &Expression,
+    resolver: &NameResolver,
+) -> bool {
     match expression {
         Expression::Relation(relationship, pattern) => {
-            matches_relation(node, source, *relationship, pattern)
+            matches_relation(node, source, *relationship, pattern, resolver)
         }
-        Expression::DescendantChain(patterns) => matches_descendant_chain(node, source, patterns),
+        Expression::DescendantChain(patterns) => {
+            matches_descendant_chain(node, source, patterns, resolver)
+        }
         Expression::And(left, right) => {
-            matches_expression(node, source, left) && matches_expression(node, source, right)
+            matches_expression(node, source, left, resolver)
+                && matches_expression(node, source, right, resolver)
         }
         Expression::Or(left, right) => {
-            matches_expression(node, source, left) || matches_expression(node, source, right)
+            matches_expression(node, source, left, resolver)
+                || matches_expression(node, source, right, resolver)
         }
-        Expression::Not(expression) => !matches_expression(node, source, expression),
+        Expression::Not(expression) => !matches_expression(node, source, expression, resolver),
     }
 }
 
-fn matches_descendant_chain(node: Node, source: &[u8], patterns: &[NodePattern]) -> bool {
+fn matches_descendant_chain(
+    node: Node,
+    source: &[u8],
+    patterns: &[NodePattern],
+    resolver: &NameResolver,
+) -> bool {
     let Some((pattern, remaining)) = patterns.split_first() else {
         return true;
     };
 
     let mut cursor = node.walk();
     node.named_children(&mut cursor).any(|child| {
-        (matches_node(child, source, pattern) && matches_descendant_chain(child, source, remaining))
-            || matches_descendant_chain(child, source, patterns)
+        (matches_node(child, source, pattern, resolver)
+            && matches_descendant_chain(child, source, remaining, resolver))
+            || matches_descendant_chain(child, source, patterns, resolver)
     })
 }
 
@@ -46,6 +62,7 @@ fn matches_relation(
     source: &[u8],
     relationship: Relationship,
     pattern: &NodePattern,
+    resolver: &NameResolver,
 ) -> bool {
     if matches!(pattern.kind, PatternKind::Argument(_)) {
         return matches_argument(node, source, pattern);
@@ -55,13 +72,13 @@ fn matches_relation(
         Relationship::Child => {
             let mut cursor = node.walk();
             node.named_children(&mut cursor)
-                .any(|child| matches_node(child, source, pattern))
+                .any(|child| matches_node(child, source, pattern, resolver))
         }
-        Relationship::Descendant => contains_descendant(node, source, pattern),
+        Relationship::Descendant => contains_descendant(node, source, pattern, resolver),
         Relationship::Ancestor => {
             let mut parent = node.parent();
             while let Some(node) = parent {
-                if matches_node(node, source, pattern) {
+                if matches_node(node, source, pattern, resolver) {
                     return true;
                 }
                 parent = node.parent();
@@ -71,14 +88,20 @@ fn matches_relation(
     }
 }
 
-fn contains_descendant(node: Node, source: &[u8], pattern: &NodePattern) -> bool {
+fn contains_descendant(
+    node: Node,
+    source: &[u8],
+    pattern: &NodePattern,
+    resolver: &NameResolver,
+) -> bool {
     let mut cursor = node.walk();
     node.named_children(&mut cursor).any(|child| {
-        matches_node(child, source, pattern) || contains_descendant(child, source, pattern)
+        matches_node(child, source, pattern, resolver)
+            || contains_descendant(child, source, pattern, resolver)
     })
 }
 
-fn matches_node(node: Node, source: &[u8], pattern: &NodePattern) -> bool {
+fn matches_node(node: Node, source: &[u8], pattern: &NodePattern, resolver: &NameResolver) -> bool {
     let target = match &pattern.kind {
         PatternKind::Call if node.kind() == "call" => node.child_by_field_name("function"),
         PatternKind::Class if node.kind() == "class_definition" => node.child_by_field_name("name"),
@@ -95,7 +118,30 @@ fn matches_node(node: Node, source: &[u8], pattern: &NodePattern) -> bool {
 
     target
         .and_then(|target| target.utf8_text(source).ok())
-        .is_some_and(|actual| value_matches(&pattern.value, actual))
+        .is_some_and(|actual| {
+            if matches!(pattern.kind, PatternKind::Call) {
+                call_value_matches(node, resolver, &pattern.value, actual)
+            } else {
+                value_matches(&pattern.value, actual)
+            }
+        })
+}
+
+fn call_value_matches(
+    node: Node,
+    resolver: &NameResolver,
+    pattern: &ValuePattern,
+    actual: &str,
+) -> bool {
+    match resolver.resolve(node, actual) {
+        NameResolution::Canonical(canonical) => {
+            value_matches(pattern, actual) || value_matches(pattern, &canonical)
+        }
+        NameResolution::ShadowedImport if matches!(pattern, ValuePattern::Exact(_)) => false,
+        NameResolution::ShadowedImport | NameResolution::Unresolved => {
+            value_matches(pattern, actual)
+        }
+    }
 }
 
 fn import_matches(node: Node, source: &[u8], pattern: &ValuePattern) -> bool {
