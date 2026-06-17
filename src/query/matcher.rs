@@ -1,14 +1,17 @@
-use std::collections::HashMap;
-
 use tree_sitter::Node;
 
 use super::model::{
-    ArgumentKey, Comparison, Expression, NodePattern, PatternKind, Query, Relationship,
-    ValuePattern,
+    ArgumentKey, Comparison, Expression, MatchCaptures, NodePattern, PatternKind, Query,
+    Relationship, ValuePattern,
 };
 use super::resolver::{NameResolution, NameResolver};
 
-pub fn matches_query(node: Node, source: &[u8], query: &Query, resolver: &NameResolver) -> bool {
+pub fn captures_query(
+    node: Node,
+    source: &[u8],
+    query: &Query,
+    resolver: &NameResolver,
+) -> Vec<MatchCaptures> {
     match_node(
         node,
         source,
@@ -17,16 +20,22 @@ pub fn matches_query(node: Node, source: &[u8], query: &Query, resolver: &NameRe
         &MatchState::default(),
     )
     .into_iter()
-    .any(|state| {
-        query.condition.as_ref().is_none_or(|condition| {
-            !match_expression(node, source, condition, resolver, &state).is_empty()
-        })
+    .flat_map(|state| {
+        if let Some(condition) = &query.condition {
+            match_expression(node, source, condition, resolver, &state)
+                .into_iter()
+                .map(|state| state.captures)
+                .collect()
+        } else {
+            vec![state.captures]
+        }
     })
+    .collect()
 }
 
 #[derive(Clone, Debug, Default)]
 struct MatchState {
-    captures: HashMap<String, String>,
+    captures: MatchCaptures,
 }
 
 impl MatchState {

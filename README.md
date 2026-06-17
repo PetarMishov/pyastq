@@ -68,6 +68,8 @@ pyastq find src 'call:request AND argument:timeout:>30'
 pyastq find src 'function:* AND descendant(call:open) AND NOT descendant(call:close)'
 pyastq find src 'call:print AND ancestor(function:*)'
 pyastq find src 'call:$target' --var target=eval
+pyastq find src 'call:eval AND argument:0:$expr' \
+  --replace 'json.loads($expr)' --change-label 'replace eval'
 ```
 
 The first pattern is the node reported as the finding. Conditions inspect its
@@ -139,6 +141,27 @@ pyastq find src 'call:* AND argument:0:$x AND argument:1:$x'
 
 That query reports calls whose first two positional arguments are the same.
 
+### Changes
+
+`find` can apply a labelled replacement to every matched AST node:
+
+```sh
+pyastq find src 'call:eval AND argument:0:$expr' \
+  --replace 'json.loads($expr)' \
+  --change-label 'replace eval with json.loads'
+```
+
+Replacement templates can use defined variables and captures. Use `$$` for a
+literal dollar sign. Unsafe one-off changes must be labelled and explicitly
+allowed:
+
+```sh
+pyastq find src 'call:eval AND argument:0:$expr' \
+  --replace 'json.loads($expr)' \
+  --change-label 'replace eval with json.loads' \
+  --unsafe-change --allow-unsafe
+```
+
 ### Python Name Resolution
 
 Call patterns follow Python imports and aliases within each file:
@@ -182,6 +205,8 @@ pyastq find . 'call:eval' --changed --max-matches 10
 pyastq find . 'call:eval' --no-cache
 pyastq find . 'call:eval' --num-workers 4
 pyastq find . 'call:$target' --var target=eval
+pyastq find . 'call:eval AND argument:0:$expr' \
+  --replace 'json.loads($expr)' --change-label 'replace eval'
 ```
 
 `--changed` includes staged, unstaged, and untracked Python files reported by
@@ -197,7 +222,11 @@ parallel processing.
 
 ## Rule Files
 
-Rules use TOML. See [`pyastq.example.toml`](pyastq.example.toml).
+Rules use TOML. See the examples under [`examples/`](examples):
+
+- [`examples/check/`](examples/check) demonstrates rules without replacements.
+- [`examples/replace/`](examples/replace) demonstrates safe and unsafe
+  replacements with expected output files.
 
 ```toml
 exclude = ["**/generated/**"]
@@ -205,9 +234,10 @@ variables = { dangerous = "eval" }
 
 [[rules]]
 id = "no-eval"
-query = "call:$dangerous"
+query = "call:$dangerous AND argument:0:$expr"
 message = "Avoid eval(); parse the expected input explicitly."
 severity = "error"
+change = { label = "replace eval with json.loads", replace = "json.loads($expr)", safety = "unsafe" }
 include = ["src/**/*.py"]
 valid = ["parse(value)"]
 invalid = ["eval(value)"]
@@ -224,12 +254,42 @@ Top-level rule variables apply to every rule. A rule may define its own
 Variables that are not defined in TOML are treated as captures, just like
 `find` queries.
 
+Rules may also define a labelled `change`. Safe changes run with `check --fix`;
+unsafe changes are skipped unless `--allow-unsafe` is also passed.
+
 Run rules:
 
 ```sh
 pyastq check . --rules pyastq.toml
 pyastq check . --rules pyastq.toml --format json --changed
+pyastq check . --rules pyastq.toml --fix
+pyastq check . --rules pyastq.toml --fix --allow-unsafe
 pyastq test-rules --rules pyastq.toml
+```
+
+Run the bundled check-only example:
+
+```sh
+pyastq check examples/check/example.py --rules examples/check/pyastq.toml
+pyastq test-rules --rules examples/check/pyastq.toml
+```
+
+Run the bundled replacement example and compare it to the expected output:
+
+```sh
+cp examples/replace/example.py /tmp/pyastq-replace-example.py
+pyastq check /tmp/pyastq-replace-example.py \
+  --rules examples/replace/pyastq.toml --fix
+diff -u examples/replace/expected.py /tmp/pyastq-replace-example.py
+```
+
+To apply unsafe replacements too:
+
+```sh
+cp examples/replace/example.py /tmp/pyastq-replace-example.py
+pyastq check /tmp/pyastq-replace-example.py \
+  --rules examples/replace/pyastq.toml --fix --allow-unsafe
+diff -u examples/replace/expected-unsafe.py /tmp/pyastq-replace-example.py
 ```
 
 `check` returns `1` when any rule matches. `test-rules` verifies that each

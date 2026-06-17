@@ -6,9 +6,10 @@ use tree_sitter::{Node, Parser, Tree};
 
 use crate::cache::{SearchCache, content_hash};
 use crate::files::{FileFilter, collect_python_files};
-use crate::query::{NameResolver, Query, matches_query};
+use crate::query::{NameResolver, Query, captures_query};
 use crate::report::{Finding, sort_findings};
 
+#[derive(Clone)]
 pub struct SearchOptions {
     pub includes: Vec<String>,
     pub required_includes: Vec<Vec<String>>,
@@ -216,7 +217,10 @@ fn collect_matches(
     resolver: &NameResolver,
     findings: &mut Vec<Finding>,
 ) -> Result<(), String> {
-    if matches_query(node, source.as_bytes(), query, resolver) {
+    if let Some(captures) = captures_query(node, source.as_bytes(), query, resolver)
+        .into_iter()
+        .next()
+    {
         let position = node.start_position();
         let line = position.row + 1;
         if !context
@@ -231,6 +235,9 @@ fn collect_matches(
                 line,
                 column: position.column + 1,
                 text: text.lines().next().unwrap_or("").to_owned(),
+                start_byte: node.start_byte(),
+                end_byte: node.end_byte(),
+                captures,
                 rule_id: context.rule_id.map(str::to_owned),
                 message: context.message.map(str::to_owned),
                 severity: context.severity.map(str::to_owned),

@@ -8,6 +8,7 @@ use crate::cache::{SearchCache, content_hash};
 use crate::files::{FileFilter, collect_python_files};
 use crate::query::{Query, QueryVariables, is_variable_name, parse_query_with_variables};
 use crate::report::{Finding, sort_findings};
+use crate::rewrite::{Change, ChangeSpec, ChangeSummary, apply_changes, validate_change};
 use crate::search::{
     SearchContext, SearchOptions, python_parser, search_source, search_source_queries_with_parser,
     validate_python_with_parser,
@@ -59,6 +60,8 @@ pub struct Rule {
     #[serde(default)]
     pub variables: QueryVariables,
     #[serde(default)]
+    pub change: Option<Change>,
+    #[serde(default)]
     pub valid: Vec<String>,
     #[serde(default)]
     pub invalid: Vec<String>,
@@ -68,6 +71,11 @@ pub struct CompiledRule<'a> {
     pub rule: &'a Rule,
     pub query: Query,
     variables: QueryVariables,
+}
+
+pub struct RuleChangeResult {
+    pub findings: Vec<Finding>,
+    pub summary: ChangeSummary,
 }
 
 pub fn load_rules(path: &Path) -> Result<RuleFile, String> {
@@ -317,6 +325,44 @@ pub fn check(
     Ok(findings)
 }
 
+pub fn apply_rule_changes(
+    root: &Path,
+    rule_file: &RuleFile,
+    base_options: &SearchOptions,
+    allow_unsafe: bool,
+) -> Result<RuleChangeResult, String> {
+    let compiled = compile_rules(rule_file)?;
+    let mut options = base_options.clone();
+    options.use_cache = false;
+    let findings = check(root, rule_file, &options)?;
+    let change_specs: std::collections::BTreeMap<_, _> = compiled
+        .iter()
+        .filter_map(|compiled_rule| {
+            compiled_rule.rule.change.as_ref().map(|change| {
+                (
+                    compiled_rule.rule.id.as_str(),
+                    ChangeSpec {
+                        change,
+                        variables: &compiled_rule.variables,
+                    },
+                )
+            })
+        })
+        .collect();
+    let summary = apply_changes(&findings, allow_unsafe, |finding| {
+        finding
+            .rule_id
+            .as_deref()
+            .and_then(|rule_id| change_specs.get(rule_id))
+            .map(|spec| ChangeSpec {
+                change: spec.change,
+                variables: spec.variables,
+            })
+    })?;
+
+    Ok(RuleChangeResult { findings, summary })
+}
+
 fn rule_result_key(
     root: &Path,
     compiled_rule: &CompiledRule<'_>,
@@ -418,6 +464,9 @@ fn validate_rules(rule_file: &RuleFile) -> Result<(), String> {
                 rule.id, rule.severity
             ));
         }
+        if let Some(change) = &rule.change {
+            validate_change(change).map_err(|error| format!("rule `{}`: {error}", rule.id))?;
+        }
     }
     Ok(())
 }
@@ -439,7 +488,7 @@ fn default_severity() -> String {
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use super::{RuleFile, check, discover_rules, load_rules, test_rules};
+    use super::{RuleFile, apply_rule_changes, check, discover_rules, load_rules, test_rules};
     use crate::search::SearchOptions;
 
     static TEMPORARY_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
@@ -519,6 +568,49 @@ mod tests {
         .unwrap();
 
         assert!(test_rules(&rules).unwrap().is_empty());
+    }
+
+    #[test]
+    fn applies_safe_rule_changes_and_skips_unsafe_without_flag() {
+        let directory = temporary_directory("rule-changes");
+        let source = directory.join("example.py");
+        std::fs::write(&source, "eval(document)\nprint(value)\n").unwrap();
+        let rules: RuleFile = toml::from_str(
+            r#"
+                [[rules]]
+                id = "replace-eval"
+                query = "call:eval AND argument:0:$expr"
+                message = "Use JSON"
+                change = { label = "replace eval with json.loads", replace = "json.loads($expr)" }
+
+                [[rules]]
+                id = "replace-print"
+                query = "call:print AND argument:0:$expr"
+                message = "Avoid print"
+                change = { label = "replace print", replace = "logger.info($expr)", safety = "unsafe" }
+            "#,
+        )
+        .unwrap();
+
+        let result =
+            apply_rule_changes(&directory, &rules, &SearchOptions::default(), false).unwrap();
+        assert_eq!(result.summary.applied, 1);
+        assert_eq!(result.summary.skipped_unsafe, 1);
+        assert_eq!(
+            std::fs::read_to_string(&source).unwrap(),
+            "json.loads(document)\nprint(value)\n"
+        );
+
+        let result =
+            apply_rule_changes(&directory, &rules, &SearchOptions::default(), true).unwrap();
+        assert_eq!(result.summary.applied, 1);
+        assert_eq!(result.summary.skipped_unsafe, 0);
+        assert_eq!(
+            std::fs::read_to_string(&source).unwrap(),
+            "json.loads(document)\nlogger.info(value)\n"
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

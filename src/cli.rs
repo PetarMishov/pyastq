@@ -4,7 +4,8 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::query::{QueryVariables, is_variable_name, parse_query_with_variables};
 use crate::report::{OutputFormat, print_findings};
-use crate::rules::{check, discover_rules, load_rules, test_rules};
+use crate::rewrite::{Change, ChangeSafety, ChangeSpec, ChangeSummary, apply_changes};
+use crate::rules::{apply_rule_changes, check, discover_rules, load_rules, test_rules};
 use crate::search::{SearchContext, SearchOptions, search_path};
 
 const EXIT_OK: i32 = 0;
@@ -31,6 +32,18 @@ enum Command {
         /// Query template variable, as KEY=VALUE. May be repeated.
         #[arg(long = "var", value_name = "KEY=VALUE", value_parser = parse_variable_assignment)]
         variables: Vec<(String, String)>,
+        /// Replacement template to apply to each matched node.
+        #[arg(long)]
+        replace: Option<String>,
+        /// User-facing label describing the replacement.
+        #[arg(long)]
+        change_label: Option<String>,
+        /// Mark this replacement as unsafe; requires --allow-unsafe to apply.
+        #[arg(long)]
+        unsafe_change: bool,
+        /// Apply changes labelled unsafe.
+        #[arg(long)]
+        allow_unsafe: bool,
         #[arg(long)]
         fail_on_match: bool,
         #[command(flatten)]
@@ -43,6 +56,12 @@ enum Command {
         path: PathBuf,
         #[arg(long, short = 'r')]
         rules: Option<PathBuf>,
+        /// Apply rule changes after matching.
+        #[arg(long)]
+        fix: bool,
+        /// Apply changes labelled unsafe.
+        #[arg(long)]
+        allow_unsafe: bool,
         #[command(flatten)]
         search: SearchArgs,
         #[command(flatten)]
@@ -102,14 +121,22 @@ fn execute(cli: Cli) -> Result<i32, String> {
             path,
             query,
             variables,
+            replace,
+            change_label,
+            unsafe_change,
+            allow_unsafe,
             fail_on_match,
             search,
             output,
         } => {
+            validate_find_change_args(replace.as_ref(), change_label.as_ref(), unsafe_change)?;
             let variables = collect_variables(variables)?;
             let cache_key = format!("find|{query}|vars={variables:?}");
             let query = parse_query_with_variables(&query, &variables)?;
             let mut search: SearchOptions = search.into();
+            if replace.is_some() {
+                search.use_cache = false;
+            }
             search.cache_key = Some(cache_key);
             let findings = search_path(
                 &path,
@@ -124,6 +151,26 @@ fn execute(cli: Cli) -> Result<i32, String> {
             if !output.quiet {
                 print_findings(&findings, output.format, &path)?;
             }
+            if let Some(replace) = replace {
+                let change = Change {
+                    label: change_label.expect("validated replacement label"),
+                    replace,
+                    safety: if unsafe_change {
+                        ChangeSafety::Unsafe
+                    } else {
+                        ChangeSafety::Safe
+                    },
+                };
+                let summary = apply_changes(&findings, allow_unsafe, |_| {
+                    Some(ChangeSpec {
+                        change: &change,
+                        variables: &variables,
+                    })
+                })?;
+                if !output.quiet {
+                    print_change_summary(&summary);
+                }
+            }
             Ok(if fail_on_match && !findings.is_empty() {
                 EXIT_FINDINGS
             } else {
@@ -133,6 +180,8 @@ fn execute(cli: Cli) -> Result<i32, String> {
         Command::Check {
             path,
             rules,
+            fix,
+            allow_unsafe,
             search,
             output,
         } => {
@@ -140,10 +189,21 @@ fn execute(cli: Cli) -> Result<i32, String> {
                 Some(rules) => load_rules(&rules)?,
                 None => discover_rules(&path)?.1,
             };
-            let findings = check(&path, &rule_file, &search.into())?;
-            if !output.quiet {
-                print_findings(&findings, output.format, &path)?;
-            }
+            let search_options = search.into();
+            let findings = if fix {
+                let result = apply_rule_changes(&path, &rule_file, &search_options, allow_unsafe)?;
+                if !output.quiet {
+                    print_findings(&result.findings, output.format, &path)?;
+                    print_change_summary(&result.summary);
+                }
+                result.findings
+            } else {
+                let findings = check(&path, &rule_file, &search_options)?;
+                if !output.quiet {
+                    print_findings(&findings, output.format, &path)?;
+                }
+                findings
+            };
             Ok(if findings.is_empty() {
                 EXIT_OK
             } else {
@@ -214,6 +274,34 @@ fn collect_variables(assignments: Vec<(String, String)>) -> Result<QueryVariable
         }
     }
     Ok(variables)
+}
+
+fn validate_find_change_args(
+    replace: Option<&String>,
+    change_label: Option<&String>,
+    unsafe_change: bool,
+) -> Result<(), String> {
+    if replace.is_none() {
+        if change_label.is_some() {
+            return Err("--change-label requires --replace".to_owned());
+        }
+        if unsafe_change {
+            return Err("--unsafe-change requires --replace".to_owned());
+        }
+        return Ok(());
+    }
+
+    match change_label {
+        Some(label) if !label.trim().is_empty() => Ok(()),
+        _ => Err("--replace requires --change-label".to_owned()),
+    }
+}
+
+fn print_change_summary(summary: &ChangeSummary) {
+    println!(
+        "applied {} change(s); skipped {} unsafe change(s)",
+        summary.applied, summary.skipped_unsafe
+    );
 }
 
 #[cfg(test)]

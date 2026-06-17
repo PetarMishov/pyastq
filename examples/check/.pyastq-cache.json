@@ -1,0 +1,98 @@
+{
+  "version": 3,
+  "files": {
+    "example.py": {
+      "hash": "5457d761d7a81d66eacabac2a3ca97a9",
+      "results": {
+        "resolver-v1|check|duplicate-version-comparison|call:* AND argument:0:$version AND argument:1:$version|Version comparisons should not pass the same value twice.|warning|vars={\"dynamic_eval\": \"eval\", \"weak_digest\": \"hashlib.md5\"}|root=examples/check/example.py|include=[]|rule_include=[]|exclude=[]|rule_exclude=[]": [
+          {
+            "path": "examples/check/example.py",
+            "line": 119,
+            "column": 12,
+            "text": "versions_match(current_version, current_version)",
+            "rule_id": "duplicate-version-comparison",
+            "message": "Version comparisons should not pass the same value twice.",
+            "severity": "warning"
+          }
+        ],
+        "resolver-v1|check|git-command-must-check|call:subprocess.run AND argument:0:contains:git AND NOT argument:check:True|Git subprocesses must fail when the command exits unsuccessfully.|error|vars={\"dynamic_eval\": \"eval\", \"weak_digest\": \"hashlib.md5\"}|root=examples/check/example.py|include=[]|rule_include=[]|exclude=[]|rule_exclude=[]": [
+          {
+            "path": "examples/check/example.py",
+            "line": 84,
+            "column": 14,
+            "text": "subprocess.run(",
+            "rule_id": "git-command-must-check",
+            "message": "Git subprocesses must fail when the command exits unsuccessfully.",
+            "severity": "error"
+          }
+        ],
+        "resolver-v1|check|legacy-package-loader|class:PackageInspector -> function:LoadPackage -> call:requests.get|Remove the legacy package loader and use load_package().|warning|vars={\"dynamic_eval\": \"eval\", \"weak_digest\": \"hashlib.md5\"}|root=examples/check/example.py|include=[]|rule_include=[]|exclude=[]|rule_exclude=[]": [
+          {
+            "path": "examples/check/example.py",
+            "line": 40,
+            "column": 1,
+            "text": "class PackageInspector:",
+            "rule_id": "legacy-package-loader",
+            "message": "Remove the legacy package loader and use load_package().",
+            "severity": "warning"
+          }
+        ],
+        "resolver-v1|check|method-name-case|function:regex:^[A-Z] AND ancestor(class:*)|Method names must start with a lowercase letter.|warning|vars={\"dynamic_eval\": \"eval\", \"weak_digest\": \"hashlib.md5\"}|root=examples/check/example.py|include=[]|rule_include=[]|exclude=[]|rule_exclude=[]": [
+          {
+            "path": "examples/check/example.py",
+            "line": 58,
+            "column": 5,
+            "text": "def LoadPackage(self, package: str) -> PackageStatus:",
+            "rule_id": "method-name-case",
+            "message": "Method names must start with a lowercase letter.",
+            "severity": "warning"
+          }
+        ],
+        "resolver-v1|check|no-dynamic-overrides|call:$dynamic_eval AND argument:0:$document|Parse release overrides as JSON instead of evaluating Python code.|error|vars={\"dynamic_eval\": \"eval\", \"weak_digest\": \"hashlib.md5\"}|root=examples/check/example.py|include=[]|rule_include=[]|exclude=[]|rule_exclude=[]": [
+          {
+            "path": "examples/check/example.py",
+            "line": 135,
+            "column": 17,
+            "text": "eval(expression)",
+            "rule_id": "no-dynamic-overrides",
+            "message": "Parse release overrides as JSON instead of evaluating Python code.",
+            "severity": "error"
+          }
+        ],
+        "resolver-v1|check|no-shell-release-hooks|call:subprocess.run AND argument:shell:True|Release hooks must use an argument list instead of shell=True.|error|vars={\"dynamic_eval\": \"eval\", \"weak_digest\": \"hashlib.md5\"}|root=examples/check/example.py|include=[]|rule_include=[]|exclude=[]|rule_exclude=[]": [
+          {
+            "path": "examples/check/example.py",
+            "line": 151,
+            "column": 5,
+            "text": "subprocess.run(command, shell=True, check=True)",
+            "rule_id": "no-shell-release-hooks",
+            "message": "Release hooks must use an argument list instead of shell=True.",
+            "severity": "error"
+          }
+        ],
+        "resolver-v1|check|pypi-request-timeout|call:requests.get AND NOT argument:timeout:*|PyPI requests must specify an explicit timeout.|error|vars={\"dynamic_eval\": \"eval\", \"weak_digest\": \"hashlib.md5\"}|root=examples/check/example.py|include=[]|rule_include=[]|exclude=[]|rule_exclude=[]": [
+          {
+            "path": "examples/check/example.py",
+            "line": 60,
+            "column": 20,
+            "text": "http.get(PYPI_URL.format(package=package))",
+            "rule_id": "pypi-request-timeout",
+            "message": "PyPI requests must specify an explicit timeout.",
+            "severity": "error"
+          }
+        ],
+        "resolver-v1|check|weak-release-digest|call:$weak_digest AND argument:0:$payload|Release artifacts should use SHA-256 or a stronger digest.|warning|vars={\"dynamic_eval\": \"eval\", \"weak_digest\": \"hashlib.md5\"}|root=examples/check/example.py|include=[]|rule_include=[]|exclude=[]|rule_exclude=[]": [
+          {
+            "path": "examples/check/example.py",
+            "line": 99,
+            "column": 12,
+            "text": "hashlib.md5(path.read_bytes())",
+            "rule_id": "weak-release-digest",
+            "message": "Release artifacts should use SHA-256 or a stronger digest.",
+            "severity": "warning"
+          }
+        ]
+      }
+    }
+  }
+}

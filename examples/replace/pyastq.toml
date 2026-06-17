@@ -1,0 +1,38 @@
+# Rules for the replacement example.
+#
+# Try:
+#   cp examples/replace/example.py /tmp/pyastq-replace-example.py
+#   cargo run -- check /tmp/pyastq-replace-example.py \
+#     --rules examples/replace/pyastq.toml --fix
+#   diff -u examples/replace/expected.py /tmp/pyastq-replace-example.py
+#
+# Add --allow-unsafe and compare with expected-unsafe.py to apply the eval
+# replacement too.
+
+variables = { dynamic_eval = "eval", weak_digest = "hashlib.md5" }
+
+[[rules]]
+id = "no-dynamic-overrides"
+query = "call:$dynamic_eval AND argument:0:$document"
+message = "Parse overrides as JSON instead of evaluating Python code."
+severity = "error"
+change = { label = "replace eval with json.loads", replace = "json.loads($document)", safety = "unsafe" }
+valid = [
+    "json.loads(value)",
+]
+invalid = [
+    "eval(value)",
+]
+
+[[rules]]
+id = "weak-release-digest"
+query = "call:$weak_digest AND argument:0:$payload"
+message = "Use SHA-256 or a stronger digest."
+severity = "warning"
+change = { label = "replace MD5 with SHA-256", replace = "hashlib.sha256($payload)" }
+valid = [
+    "hashlib.sha256(data).hexdigest()",
+]
+invalid = [
+    "hashlib.md5(data).hexdigest()",
+]

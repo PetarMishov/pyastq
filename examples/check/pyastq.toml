@@ -1,15 +1,15 @@
 # Rules for the PyPI release-readiness example.
 #
 # Try:
-#   cargo run -- check pyastq.example.py --rules pyastq.example.toml
-#   cargo run -- test-rules --rules pyastq.example.toml
-#   cargo run -- find pyastq.example.py \
+#   cargo run -- check examples/check/example.py --rules examples/check/pyastq.toml
+#   cargo run -- test-rules --rules examples/check/pyastq.toml
+#   cargo run -- find examples/check/example.py \
 #     'class:PackageInspector -> function:LoadPackage -> call:requests.get'
 #
 # The rules intentionally demonstrate exact matching, import alias resolution,
 # descendant chains, argument predicates, negation, regexes, variables, captures,
-# and suppressions.
-# Each rule has both a caught and a clean counterpart in pyastq.example.py.
+# and suppressions, but no automated replacements.
+# Each rule has both a caught and a clean counterpart in example.py.
 
 variables = { dynamic_eval = "eval", weak_digest = "hashlib.md5" }
 
@@ -71,7 +71,7 @@ invalid = [
 [[rules]]
 id = "no-dynamic-overrides"
 # Caught: parse_legacy_overrides; clean: parse_json_overrides.
-query = "call:$dynamic_eval"
+query = "call:$dynamic_eval AND argument:0:$document"
 message = "Parse release overrides as JSON instead of evaluating Python code."
 severity = "error"
 valid = [
@@ -85,7 +85,7 @@ invalid = [
 id = "weak-release-digest"
 # Caught: legacy_artifact_id; clean: artifact_sha256.
 # suppressed_partner_artifact_id also demonstrates a targeted exception.
-query = "call:$weak_digest"
+query = "call:$weak_digest AND argument:0:$payload"
 message = "Release artifacts should use SHA-256 or a stronger digest."
 severity = "warning"
 valid = [

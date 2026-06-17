@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use regex::Regex;
 
 pub type QueryVariables = BTreeMap<String, String>;
+pub type MatchCaptures = BTreeMap<String, String>;
 
 #[derive(Debug)]
 pub struct Query {

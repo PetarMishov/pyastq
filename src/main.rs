@@ -3,6 +3,7 @@ mod cli;
 mod files;
 mod query;
 mod report;
+mod rewrite;
 mod rules;
 mod search;
 

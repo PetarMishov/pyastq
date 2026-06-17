@@ -48,6 +48,10 @@ fn find_applies_query_variables() {
             path: source,
             query: "call:$target".to_owned(),
             variables: vec![("target".to_owned(), "eval".to_owned())],
+            replace: None,
+            change_label: None,
+            unsafe_change: false,
+            allow_unsafe: false,
             fail_on_match: true,
             search: SearchArgs::default(),
             output: OutputArgs {
@@ -58,6 +62,72 @@ fn find_applies_query_variables() {
     };
 
     assert_eq!(execute(cli).unwrap(), EXIT_FINDINGS);
+
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn find_applies_safe_replacement_templates() {
+    let directory = temporary_directory();
+    let source = directory.join("example.py");
+    std::fs::write(&source, "eval(document)\nparse(value)\n").unwrap();
+
+    let cli = Cli {
+        command: Command::Find {
+            path: source.clone(),
+            query: "call:eval AND argument:0:$expr".to_owned(),
+            variables: Vec::new(),
+            replace: Some("json.loads($expr)".to_owned()),
+            change_label: Some("replace eval".to_owned()),
+            unsafe_change: false,
+            allow_unsafe: false,
+            fail_on_match: false,
+            search: SearchArgs::default(),
+            output: OutputArgs {
+                format: OutputFormat::Text,
+                quiet: true,
+            },
+        },
+    };
+
+    assert_eq!(execute(cli).unwrap(), EXIT_OK);
+    assert_eq!(
+        std::fs::read_to_string(&source).unwrap(),
+        "json.loads(document)\nparse(value)\n"
+    );
+
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn find_skips_unsafe_replacement_without_allow_unsafe() {
+    let directory = temporary_directory();
+    let source = directory.join("example.py");
+    std::fs::write(&source, "eval(document)\n").unwrap();
+
+    let cli = Cli {
+        command: Command::Find {
+            path: source.clone(),
+            query: "call:eval AND argument:0:$expr".to_owned(),
+            variables: Vec::new(),
+            replace: Some("json.loads($expr)".to_owned()),
+            change_label: Some("replace eval".to_owned()),
+            unsafe_change: true,
+            allow_unsafe: false,
+            fail_on_match: false,
+            search: SearchArgs::default(),
+            output: OutputArgs {
+                format: OutputFormat::Text,
+                quiet: true,
+            },
+        },
+    };
+
+    assert_eq!(execute(cli).unwrap(), EXIT_OK);
+    assert_eq!(
+        std::fs::read_to_string(&source).unwrap(),
+        "eval(document)\n"
+    );
 
     std::fs::remove_dir_all(directory).unwrap();
 }
@@ -85,6 +155,10 @@ fn variable_assignments_require_unique_valid_names() {
         .unwrap_err(),
         "duplicate variable `target`"
     );
+    assert_eq!(
+        super::validate_find_change_args(Some(&"value".to_owned()), None, false).unwrap_err(),
+        "--replace requires --change-label"
+    );
 }
 
 fn check_command(path: PathBuf, rules: PathBuf) -> Cli {
@@ -92,6 +166,8 @@ fn check_command(path: PathBuf, rules: PathBuf) -> Cli {
         command: Command::Check {
             path,
             rules: Some(rules),
+            fix: false,
+            allow_unsafe: false,
             search: SearchArgs::default(),
             output: OutputArgs {
                 format: OutputFormat::Text,

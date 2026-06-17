@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::cache::content_hash;
+use crate::query::MatchCaptures;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum OutputFormat {
@@ -21,6 +22,12 @@ pub struct Finding {
     pub line: usize,
     pub column: usize,
     pub text: String,
+    #[serde(skip)]
+    pub start_byte: usize,
+    #[serde(skip)]
+    pub end_byte: usize,
+    #[serde(skip)]
+    pub captures: MatchCaptures,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rule_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -193,6 +200,7 @@ mod tests {
     use std::path::Path;
 
     use super::{Finding, sarif_log, sort_findings};
+    use crate::query::MatchCaptures;
 
     fn finding(path: &str, line: usize, column: usize) -> Finding {
         Finding {
@@ -200,6 +208,9 @@ mod tests {
             line,
             column,
             text: String::new(),
+            start_byte: 0,
+            end_byte: 0,
+            captures: MatchCaptures::new(),
             rule_id: None,
             message: None,
             severity: None,
@@ -239,6 +250,9 @@ mod tests {
                 line: 4,
                 column: 8,
                 text: "eval(value)".to_owned(),
+                start_byte: 0,
+                end_byte: 0,
+                captures: MatchCaptures::new(),
                 rule_id: Some("no-eval".to_owned()),
                 message: Some("Avoid eval".to_owned()),
                 severity: Some("error".to_owned()),

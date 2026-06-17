@@ -4,10 +4,10 @@ The normal path is useful: it queries package metadata, records the current Git
 revision, optionally hashes a local distribution artifact, and prints JSON.
 
 The module also contains a few believable legacy shortcuts for
-``pyastq.example.toml`` to find. They are intentionally retained so the file can
-demonstrate structural matching, import alias resolution, descendant chains,
-argument predicates, negation, query variables, captures, and targeted
-suppressions.
+``examples/check/pyastq.toml`` to find. They are intentionally retained so the
+file can demonstrate structural matching, import alias resolution, descendant
+chains, argument predicates, negation, query variables, captures, and targeted
+suppressions without automated replacements.
 """
 
 from __future__ import annotations
