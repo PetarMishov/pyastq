@@ -2,24 +2,34 @@ use regex::Regex;
 
 use super::lexer::{RelationToken, Token, tokenize};
 use super::model::{
-    ArgumentKey, Comparison, Expression, NodePattern, PatternKind, Query, Relationship,
-    ValuePattern,
+    ArgumentKey, Comparison, Expression, NodePattern, PatternKind, Query, QueryVariables,
+    Relationship, ValuePattern,
 };
 
+#[cfg(test)]
 pub fn parse_query(query: &str) -> Result<Query, String> {
-    Parser::new(tokenize(query)?).parse()
+    parse_query_with_variables(query, &QueryVariables::new())
 }
 
-struct Parser {
+pub fn parse_query_with_variables(
+    query: &str,
+    variables: &QueryVariables,
+) -> Result<Query, String> {
+    Parser::new(tokenize(query)?, variables).parse()
+}
+
+struct Parser<'a> {
     tokens: Vec<Token>,
     position: usize,
+    variables: &'a QueryVariables,
 }
 
-impl Parser {
-    fn new(tokens: Vec<Token>) -> Self {
+impl<'a> Parser<'a> {
+    fn new(tokens: Vec<Token>, variables: &'a QueryVariables) -> Self {
         Self {
             tokens,
             position: 0,
+            variables,
         }
     }
 
@@ -100,7 +110,7 @@ impl Parser {
             return Err("expected a node pattern".to_owned());
         };
         self.position += 1;
-        parse_node_pattern(pattern)
+        parse_node_pattern(pattern, self.variables)
     }
 
     fn consume(&mut self, expected: &Token) -> bool {
@@ -137,23 +147,25 @@ impl From<RelationToken> for Relationship {
     }
 }
 
-fn parse_node_pattern(pattern: &str) -> Result<NodePattern, String> {
+fn parse_node_pattern(pattern: &str, variables: &QueryVariables) -> Result<NodePattern, String> {
     let (kind, value) = pattern
         .split_once(':')
         .ok_or_else(|| format!("invalid pattern `{pattern}`; expected `<kind>:<value>`"))?;
 
     let (kind, value) = match kind {
-        "call" => (PatternKind::Call, parse_value(value)?),
-        "class" => (PatternKind::Class, parse_value(value)?),
-        "function" | "function_definition" => (PatternKind::Function, parse_value(value)?),
-        "import" => (PatternKind::Import, parse_value(value)?),
+        "call" => (PatternKind::Call, parse_value(value, variables)?),
+        "class" => (PatternKind::Class, parse_value(value, variables)?),
+        "function" | "function_definition" => {
+            (PatternKind::Function, parse_value(value, variables)?)
+        }
+        "import" => (PatternKind::Import, parse_value(value, variables)?),
         "argument" => {
             let (key, value) = value.split_once(':').ok_or_else(|| {
                 "arguments require a key and value, for example `argument:timeout:30`".to_owned()
             })?;
             (
                 PatternKind::Argument(parse_argument_key(key)?),
-                parse_value(value)?,
+                parse_value(value, variables)?,
             )
         }
         _ => return Err(format!("unsupported pattern kind `{kind}`")),
@@ -169,13 +181,36 @@ fn parse_argument_key(key: &str) -> Result<ArgumentKey, String> {
     if let Ok(position) = key.parse::<usize>() {
         return Ok(ArgumentKey::Position(position));
     }
-    if is_identifier(key) {
+    if is_variable_name(key) {
         return Ok(ArgumentKey::Keyword(key.to_owned()));
     }
     Err(format!("invalid argument key `{key}`"))
 }
 
-fn parse_value(value: &str) -> Result<ValuePattern, String> {
+fn parse_value(value: &str, variables: &QueryVariables) -> Result<ValuePattern, String> {
+    parse_value_with_stack(value, variables, &mut Vec::new())
+}
+
+fn parse_value_with_stack(
+    value: &str,
+    variables: &QueryVariables,
+    stack: &mut Vec<String>,
+) -> Result<ValuePattern, String> {
+    if let Some(variable) = parse_variable_reference(value)? {
+        return match variables.get(variable) {
+            Some(replacement) => {
+                if stack.iter().any(|name| name == variable) {
+                    return Err(format!("variable `{variable}` references itself"));
+                }
+                stack.push(variable.to_owned());
+                let value = parse_value_with_stack(replacement, variables, stack);
+                stack.pop();
+                value
+            }
+            None => Ok(ValuePattern::Capture(variable.to_owned())),
+        };
+    }
+
     if value == "*" {
         return Ok(ValuePattern::Any);
     }
@@ -187,6 +222,7 @@ fn parse_value(value: &str) -> Result<ValuePattern, String> {
         ("<", Comparison::Less),
     ] {
         if let Some(number) = value.strip_prefix(prefix) {
+            let number = resolve_required_variable(number, variables, "numeric comparison")?;
             return Ok(ValuePattern::Numeric(comparison, parse_number(number)?));
         }
     }
@@ -198,11 +234,13 @@ fn parse_value(value: &str) -> Result<ValuePattern, String> {
         ("ends_with:", ValuePattern::EndsWith),
     ] {
         if let Some(value) = value.strip_prefix(prefix) {
+            let value = resolve_required_variable(value, variables, prefix.trim_end_matches(':'))?;
             return Ok(constructor(value.to_owned()));
         }
     }
 
     if let Some(expression) = value.strip_prefix("regex:") {
+        let expression = resolve_required_variable(expression, variables, "regex")?;
         return Regex::new(expression)
             .map(ValuePattern::Regex)
             .map_err(|error| format!("invalid regex `{expression}`: {error}"));
@@ -218,7 +256,38 @@ fn parse_number(number: &str) -> Result<f64, String> {
         .map_err(|_| format!("`{number}` is not a valid number"))
 }
 
-fn is_identifier(value: &str) -> bool {
+fn resolve_required_variable<'a>(
+    value: &'a str,
+    variables: &'a QueryVariables,
+    context: &str,
+) -> Result<&'a str, String> {
+    let Some(variable) = parse_variable_reference(value)? else {
+        return Ok(value);
+    };
+    variables
+        .get(variable)
+        .map(String::as_str)
+        .ok_or_else(|| format!("undefined variable `${variable}` cannot be used in {context}"))
+}
+
+fn parse_variable_reference(value: &str) -> Result<Option<&str>, String> {
+    let Some(rest) = value.strip_prefix('$') else {
+        return Ok(None);
+    };
+    let variable = if let Some(rest) = rest.strip_prefix('{') {
+        rest.strip_suffix('}')
+            .ok_or_else(|| format!("invalid variable reference `{value}`"))?
+    } else {
+        rest
+    };
+    if is_variable_name(variable) {
+        Ok(Some(variable))
+    } else {
+        Err(format!("invalid variable reference `{value}`"))
+    }
+}
+
+pub fn is_variable_name(value: &str) -> bool {
     let mut characters = value.chars();
     characters
         .next()
@@ -228,7 +297,8 @@ fn is_identifier(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_query;
+    use super::{parse_query, parse_query_with_variables};
+    use crate::query::QueryVariables;
 
     #[test]
     fn parses_nested_regex_query() {
@@ -244,5 +314,22 @@ mod tests {
     fn rejects_bad_regex_and_argument_keys() {
         assert!(parse_query("function:regex:[").is_err());
         assert!(parse_query("call:f AND argument:1bad:4").is_err());
+    }
+
+    #[test]
+    fn parses_defined_and_capture_variables() {
+        let variables = QueryVariables::from([("target".to_owned(), "regex:^safe_".to_owned())]);
+
+        parse_query_with_variables("call:$target", &variables).unwrap();
+        parse_query("call:* AND argument:0:$x AND argument:1:${x}").unwrap();
+        assert!(parse_query("call:$1bad").is_err());
+    }
+
+    #[test]
+    fn rejects_undefined_variables_inside_predicates() {
+        assert_eq!(
+            parse_query("call:contains:$target").unwrap_err(),
+            "undefined variable `$target` cannot be used in contains"
+        );
     }
 }

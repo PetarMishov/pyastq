@@ -67,6 +67,7 @@ pyastq find src 'class:* -> function:regex:^[A-Z]'
 pyastq find src 'call:request AND argument:timeout:>30'
 pyastq find src 'function:* AND descendant(call:open) AND NOT descendant(call:close)'
 pyastq find src 'call:print AND ancestor(function:*)'
+pyastq find src 'call:$target' --var target=eval
 ```
 
 The first pattern is the node reported as the finding. Conditions inspect its
@@ -112,6 +113,32 @@ regex:^[A-Z]              regular expression
 Quote a complete query when invoking it from a shell. Quotes inside a value
 allow spaces, for example `argument:0:"hello world"`.
 
+### Query Variables
+
+Use `$name` or `${name}` anywhere a complete value is accepted:
+
+```sh
+pyastq find src 'call:$target' --var target=requests.get
+```
+
+Defined variables are parsed as query values, so values such as `regex:^safe_`,
+`contains:token`, or `>30` keep their normal meaning. Variables may also be used
+inside value predicates:
+
+```sh
+pyastq find src 'function:regex:$pattern' --var pattern='^[A-Z]'
+pyastq find src 'call:request AND argument:timeout:>$limit' --var limit=30
+```
+
+An undefined variable becomes a capture for one candidate match. Reusing the
+same capture requires the same source value each time:
+
+```sh
+pyastq find src 'call:* AND argument:0:$x AND argument:1:$x'
+```
+
+That query reports calls whose first two positional arguments are the same.
+
 ### Python Name Resolution
 
 Call patterns follow Python imports and aliases within each file:
@@ -154,6 +181,7 @@ pyastq find . 'call:eval' --include 'src/**/*.py' --exclude '**/generated/**'
 pyastq find . 'call:eval' --changed --max-matches 10
 pyastq find . 'call:eval' --no-cache
 pyastq find . 'call:eval' --num-workers 4
+pyastq find . 'call:$target' --var target=eval
 ```
 
 `--changed` includes staged, unstaged, and untracked Python files reported by
@@ -173,10 +201,11 @@ Rules use TOML. See [`pyastq.example.toml`](pyastq.example.toml).
 
 ```toml
 exclude = ["**/generated/**"]
+variables = { dangerous = "eval" }
 
 [[rules]]
 id = "no-eval"
-query = "call:eval"
+query = "call:$dangerous"
 message = "Avoid eval(); parse the expected input explicitly."
 severity = "error"
 include = ["src/**/*.py"]
@@ -189,6 +218,11 @@ query = "class:* -> function:regex:^[A-Z]"
 message = "Method names must start with a lowercase letter."
 severity = "warning"
 ```
+
+Top-level rule variables apply to every rule. A rule may define its own
+`variables = { ... }` table to override or add values for that rule only.
+Variables that are not defined in TOML are treated as captures, just like
+`find` queries.
 
 Run rules:
 

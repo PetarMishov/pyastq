@@ -1,4 +1,8 @@
+use std::collections::BTreeMap;
+
 use regex::Regex;
+
+pub type QueryVariables = BTreeMap<String, String>;
 
 #[derive(Debug)]
 pub struct Query {
@@ -53,6 +57,7 @@ pub enum ValuePattern {
     EndsWith(String),
     Regex(Regex),
     Numeric(Comparison, f64),
+    Capture(String),
 }
 
 #[derive(Clone, Copy, Debug)]

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::{Cli, Command, EXIT_OK, OutputArgs, SearchArgs, execute};
+use super::{Cli, Command, EXIT_FINDINGS, EXIT_OK, OutputArgs, SearchArgs, execute};
 use crate::report::OutputFormat;
 
 static TEMPORARY_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
@@ -38,12 +38,53 @@ fn check_accepts_a_bare_name_as_valid_python() {
 }
 
 #[test]
+fn find_applies_query_variables() {
+    let directory = temporary_directory();
+    let source = directory.join("example.py");
+    std::fs::write(&source, "eval(value)\nparse(value)\n").unwrap();
+
+    let cli = Cli {
+        command: Command::Find {
+            path: source,
+            query: "call:$target".to_owned(),
+            variables: vec![("target".to_owned(), "eval".to_owned())],
+            fail_on_match: true,
+            search: SearchArgs::default(),
+            output: OutputArgs {
+                format: OutputFormat::Text,
+                quiet: true,
+            },
+        },
+    };
+
+    assert_eq!(execute(cli).unwrap(), EXIT_FINDINGS);
+
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn num_workers_must_be_positive() {
     assert_eq!(
         super::parse_num_workers("0").unwrap_err(),
         "num-workers must be a positive integer"
     );
     assert_eq!(super::parse_num_workers("4").unwrap(), 4);
+}
+
+#[test]
+fn variable_assignments_require_unique_valid_names() {
+    assert_eq!(
+        super::parse_variable_assignment("1bad=value").unwrap_err(),
+        "invalid variable name `1bad`"
+    );
+    assert_eq!(
+        super::collect_variables(vec![
+            ("target".to_owned(), "eval".to_owned()),
+            ("target".to_owned(), "print".to_owned()),
+        ])
+        .unwrap_err(),
+        "duplicate variable `target`"
+    );
 }
 
 fn check_command(path: PathBuf, rules: PathBuf) -> Cli {

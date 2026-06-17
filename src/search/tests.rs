@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{SearchContext, SearchOptions, search_path, search_source};
-use crate::query::parse_query;
+use crate::query::{QueryVariables, parse_query, parse_query_with_variables};
 
 static TEMPORARY_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -68,6 +68,32 @@ fn matches_keyword_and_positional_arguments() {
     let findings = search_source(Path::new("example.py"), source, &query, context(None)).unwrap();
     assert_eq!(findings.len(), 1);
     assert_eq!(findings[0].text, "func(\"input.txt\")");
+}
+
+#[test]
+fn captures_undefined_variables_within_each_match() {
+    let source = "same(value, value)\ndifferent(first, second)\nstrings(\"x\", \"x\")\n";
+    let query = parse_query("call:* AND argument:0:$x AND argument:1:$x").unwrap();
+    let findings = search_source(Path::new("example.py"), source, &query, context(None)).unwrap();
+
+    assert_eq!(
+        findings
+            .iter()
+            .map(|finding| finding.text.as_str())
+            .collect::<Vec<_>>(),
+        ["same(value, value)", "strings(\"x\", \"x\")"]
+    );
+}
+
+#[test]
+fn applies_defined_variables_to_query_templates() {
+    let source = "eval(value)\nparse(value)\n";
+    let variables = QueryVariables::from([("target".to_owned(), "eval".to_owned())]);
+    let query = parse_query_with_variables("call:$target", &variables).unwrap();
+    let findings = search_source(Path::new("example.py"), source, &query, context(None)).unwrap();
+
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].text, "eval(value)");
 }
 
 #[test]

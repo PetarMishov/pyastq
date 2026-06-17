@@ -7,8 +7,11 @@
 #     'class:PackageInspector -> function:LoadPackage -> call:requests.get'
 #
 # The rules intentionally demonstrate exact matching, import alias resolution,
-# descendant chains, argument predicates, negation, regexes, and suppressions.
+# descendant chains, argument predicates, negation, regexes, variables, captures,
+# and suppressions.
 # Each rule has both a caught and a clean counterpart in pyastq.example.py.
+
+variables = { dynamic_eval = "eval", weak_digest = "hashlib.md5" }
 
 [[rules]]
 id = "pypi-request-timeout"
@@ -68,7 +71,7 @@ invalid = [
 [[rules]]
 id = "no-dynamic-overrides"
 # Caught: parse_legacy_overrides; clean: parse_json_overrides.
-query = "call:eval"
+query = "call:$dynamic_eval"
 message = "Parse release overrides as JSON instead of evaluating Python code."
 severity = "error"
 valid = [
@@ -82,7 +85,7 @@ invalid = [
 id = "weak-release-digest"
 # Caught: legacy_artifact_id; clean: artifact_sha256.
 # suppressed_partner_artifact_id also demonstrates a targeted exception.
-query = "call:hashlib.md5"
+query = "call:$weak_digest"
 message = "Release artifacts should use SHA-256 or a stronger digest."
 severity = "warning"
 valid = [
@@ -90,6 +93,22 @@ valid = [
 ]
 invalid = [
     "hashlib.md5(data).hexdigest()",
+]
+
+[[rules]]
+id = "duplicate-version-comparison"
+# Caught: compare_legacy_version; clean: compare_release_version.
+# $version is intentionally not defined, so it captures one argument and
+# requires the second argument to be the same source value. This demonstrates
+# the same undefined variable appearing twice in one query pattern.
+query = "call:* AND argument:0:$version AND argument:1:$version"
+message = "Version comparisons should not pass the same value twice."
+severity = "warning"
+valid = [
+    "versions_match(current_version, expected_version)",
+]
+invalid = [
+    "versions_match(current_version, current_version)",
 ]
 
 [[rules]]

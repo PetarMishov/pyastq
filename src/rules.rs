@@ -6,7 +6,7 @@ use serde::Deserialize;
 
 use crate::cache::{SearchCache, content_hash};
 use crate::files::{FileFilter, collect_python_files};
-use crate::query::{Query, parse_query};
+use crate::query::{Query, QueryVariables, is_variable_name, parse_query_with_variables};
 use crate::report::{Finding, sort_findings};
 use crate::search::{
     SearchContext, SearchOptions, python_parser, search_source, search_source_queries_with_parser,
@@ -17,6 +17,8 @@ use crate::search::{
 pub struct RuleFile {
     #[serde(default)]
     pub exclude: Vec<String>,
+    #[serde(default)]
+    pub variables: QueryVariables,
     #[serde(default)]
     pub rules: Vec<Rule>,
 }
@@ -36,6 +38,8 @@ struct PyProjectPyastq {
     #[serde(default)]
     exclude: Vec<String>,
     #[serde(default)]
+    variables: QueryVariables,
+    #[serde(default)]
     rules: Vec<Rule>,
     #[serde(rename = "rules-file")]
     rules_file: Option<PathBuf>,
@@ -53,6 +57,8 @@ pub struct Rule {
     #[serde(default)]
     pub exclude: Vec<String>,
     #[serde(default)]
+    pub variables: QueryVariables,
+    #[serde(default)]
     pub valid: Vec<String>,
     #[serde(default)]
     pub invalid: Vec<String>,
@@ -61,6 +67,7 @@ pub struct Rule {
 pub struct CompiledRule<'a> {
     pub rule: &'a Rule,
     pub query: Query,
+    variables: QueryVariables,
 }
 
 pub fn load_rules(path: &Path) -> Result<RuleFile, String> {
@@ -122,6 +129,7 @@ fn parse_pyproject_rules(path: &Path, source: &str) -> Result<Option<RuleFile>, 
     };
     let mut rules = RuleFile {
         exclude: configuration.exclude,
+        variables: configuration.variables,
         rules: configuration.rules,
     };
 
@@ -143,8 +151,16 @@ fn parse_pyproject_rules(path: &Path, source: &str) -> Result<Option<RuleFile>, 
             .map_err(|error| format!("could not read {}: {error}", rules_path.display()))?;
         let external: RuleFile = toml::from_str(&source)
             .map_err(|error| format!("invalid rule file {}: {error}", rules_path.display()))?;
-        rules.exclude.extend(external.exclude);
-        rules.rules.splice(0..0, external.rules);
+        let RuleFile {
+            exclude,
+            variables,
+            rules: external_rules,
+        } = external;
+        let inline_variables = std::mem::take(&mut rules.variables);
+        rules.variables = variables;
+        rules.variables.extend(inline_variables);
+        rules.exclude.extend(exclude);
+        rules.rules.splice(0..0, external_rules);
     }
 
     Ok(Some(rules))
@@ -308,11 +324,12 @@ fn rule_result_key(
     global_excludes: &[String],
 ) -> String {
     format!(
-        "resolver-v1|check|{}|{}|{}|{}|root={}|include={:?}|rule_include={:?}|exclude={:?}|rule_exclude={:?}",
+        "resolver-v1|check|{}|{}|{}|{}|vars={:?}|root={}|include={:?}|rule_include={:?}|exclude={:?}|rule_exclude={:?}",
         compiled_rule.rule.id,
         compiled_rule.rule.query,
         compiled_rule.rule.message,
         compiled_rule.rule.severity,
+        &compiled_rule.variables,
         root.display(),
         options.includes,
         compiled_rule.rule.include,
@@ -368,8 +385,14 @@ fn compile_rules(rule_file: &RuleFile) -> Result<Vec<CompiledRule<'_>>, String> 
         .rules
         .iter()
         .map(|rule| {
-            parse_query(&rule.query)
-                .map(|query| CompiledRule { rule, query })
+            let mut variables = rule_file.variables.clone();
+            variables.extend(rule.variables.clone());
+            parse_query_with_variables(&rule.query, &variables)
+                .map(|query| CompiledRule {
+                    rule,
+                    query,
+                    variables,
+                })
                 .map_err(|error| format!("rule `{}`: {error}", rule.id))
         })
         .collect()
@@ -379,8 +402,10 @@ fn validate_rules(rule_file: &RuleFile) -> Result<(), String> {
     if rule_file.rules.is_empty() {
         return Err("rule configuration must define at least one rule".to_owned());
     }
+    validate_variable_names("rule file", &rule_file.variables)?;
     let mut ids = std::collections::HashSet::new();
     for rule in &rule_file.rules {
+        validate_variable_names(&format!("rule `{}`", rule.id), &rule.variables)?;
         if rule.id.trim().is_empty() {
             return Err("rule IDs cannot be empty".to_owned());
         }
@@ -392,6 +417,15 @@ fn validate_rules(rule_file: &RuleFile) -> Result<(), String> {
                 "rule `{}` has invalid severity `{}`; expected info, warning, or error",
                 rule.id, rule.severity
             ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_variable_names(scope: &str, variables: &QueryVariables) -> Result<(), String> {
+    for name in variables.keys() {
+        if !is_variable_name(name) {
+            return Err(format!("{scope} has invalid variable name `{name}`"));
         }
     }
     Ok(())
@@ -420,6 +454,66 @@ mod tests {
                 message = "Avoid eval"
                 valid = ["parse(value)"]
                 invalid = ["eval(value)"]
+            "#,
+        )
+        .unwrap();
+
+        assert!(test_rules(&rules).unwrap().is_empty());
+    }
+
+    #[test]
+    fn applies_rule_variables_and_captures() {
+        let directory = temporary_directory("rule-variables");
+        std::fs::write(
+            directory.join("example.py"),
+            "eval(value)\nparse(value)\nsame(first, first)\ndifferent(first, second)\n",
+        )
+        .unwrap();
+        let rules: RuleFile = toml::from_str(
+            r#"
+                variables = { target = "eval" }
+
+                [[rules]]
+                id = "templated-call"
+                query = "call:$target"
+                message = "Avoid target call"
+
+                [[rules]]
+                id = "same-argument"
+                query = "call:* AND argument:0:$x AND argument:1:$x"
+                message = "Repeated argument"
+            "#,
+        )
+        .unwrap();
+
+        let findings = check(&directory, &rules, &SearchOptions::default()).unwrap();
+        assert_eq!(
+            findings
+                .iter()
+                .map(|finding| (finding.text.as_str(), finding.rule_id.as_deref()))
+                .collect::<Vec<_>>(),
+            [
+                ("eval(value)", Some("templated-call")),
+                ("same(first, first)", Some("same-argument"))
+            ]
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn rule_variables_override_file_variables() {
+        let rules: RuleFile = toml::from_str(
+            r#"
+                variables = { target = "eval" }
+
+                [[rules]]
+                id = "no-print"
+                query = "call:$target"
+                message = "Avoid print"
+                variables = { target = "print" }
+                valid = ["eval(value)"]
+                invalid = ["print(value)"]
             "#,
         )
         .unwrap();

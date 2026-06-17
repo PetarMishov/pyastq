@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 
-use crate::query::parse_query;
+use crate::query::{QueryVariables, is_variable_name, parse_query_with_variables};
 use crate::report::{OutputFormat, print_findings};
 use crate::rules::{check, discover_rules, load_rules, test_rules};
 use crate::search::{SearchContext, SearchOptions, search_path};
@@ -28,6 +28,9 @@ enum Command {
     Find {
         path: PathBuf,
         query: String,
+        /// Query template variable, as KEY=VALUE. May be repeated.
+        #[arg(long = "var", value_name = "KEY=VALUE", value_parser = parse_variable_assignment)]
+        variables: Vec<(String, String)>,
         #[arg(long)]
         fail_on_match: bool,
         #[command(flatten)]
@@ -98,12 +101,14 @@ fn execute(cli: Cli) -> Result<i32, String> {
         Command::Find {
             path,
             query,
+            variables,
             fail_on_match,
             search,
             output,
         } => {
-            let cache_key = format!("find|{query}");
-            let query = parse_query(&query)?;
+            let variables = collect_variables(variables)?;
+            let cache_key = format!("find|{query}|vars={variables:?}");
+            let query = parse_query_with_variables(&query, &variables)?;
             let mut search: SearchOptions = search.into();
             search.cache_key = Some(cache_key);
             let findings = search_path(
@@ -189,6 +194,26 @@ fn parse_num_workers(value: &str) -> Result<usize, String> {
         Ok(workers) if workers > 0 => Ok(workers),
         _ => Err("num-workers must be a positive integer".to_owned()),
     }
+}
+
+fn parse_variable_assignment(value: &str) -> Result<(String, String), String> {
+    let (name, value) = value
+        .split_once('=')
+        .ok_or_else(|| "variables must use KEY=VALUE".to_owned())?;
+    if !is_variable_name(name) {
+        return Err(format!("invalid variable name `{name}`"));
+    }
+    Ok((name.to_owned(), value.to_owned()))
+}
+
+fn collect_variables(assignments: Vec<(String, String)>) -> Result<QueryVariables, String> {
+    let mut variables = QueryVariables::new();
+    for (name, value) in assignments {
+        if variables.insert(name.clone(), value).is_some() {
+            return Err(format!("duplicate variable `{name}`"));
+        }
+    }
+    Ok(variables)
 }
 
 #[cfg(test)]

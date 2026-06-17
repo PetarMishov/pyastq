@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use tree_sitter::Node;
 
 use super::model::{
@@ -7,83 +9,127 @@ use super::model::{
 use super::resolver::{NameResolution, NameResolver};
 
 pub fn matches_query(node: Node, source: &[u8], query: &Query, resolver: &NameResolver) -> bool {
-    matches_node(node, source, &query.anchor, resolver)
-        && query
-            .condition
-            .as_ref()
-            .is_none_or(|condition| matches_expression(node, source, condition, resolver))
+    match_node(
+        node,
+        source,
+        &query.anchor,
+        resolver,
+        &MatchState::default(),
+    )
+    .into_iter()
+    .any(|state| {
+        query.condition.as_ref().is_none_or(|condition| {
+            !match_expression(node, source, condition, resolver, &state).is_empty()
+        })
+    })
 }
 
-fn matches_expression(
+#[derive(Clone, Debug, Default)]
+struct MatchState {
+    captures: HashMap<String, String>,
+}
+
+impl MatchState {
+    fn bind_capture(&self, name: &str, actual: &str) -> Option<Self> {
+        match self.captures.get(name) {
+            Some(expected) if expected == actual => Some(self.clone()),
+            Some(_) => None,
+            None => {
+                let mut next = self.clone();
+                next.captures.insert(name.to_owned(), actual.to_owned());
+                Some(next)
+            }
+        }
+    }
+}
+
+fn match_expression(
     node: Node,
     source: &[u8],
     expression: &Expression,
     resolver: &NameResolver,
-) -> bool {
+    state: &MatchState,
+) -> Vec<MatchState> {
     match expression {
         Expression::Relation(relationship, pattern) => {
-            matches_relation(node, source, *relationship, pattern, resolver)
+            match_relation(node, source, *relationship, pattern, resolver, state)
         }
         Expression::DescendantChain(patterns) => {
-            matches_descendant_chain(node, source, patterns, resolver)
+            match_descendant_chain(node, source, patterns, resolver, state)
         }
-        Expression::And(left, right) => {
-            matches_expression(node, source, left, resolver)
-                && matches_expression(node, source, right, resolver)
-        }
+        Expression::And(left, right) => match_expression(node, source, left, resolver, state)
+            .into_iter()
+            .flat_map(|state| match_expression(node, source, right, resolver, &state))
+            .collect(),
         Expression::Or(left, right) => {
-            matches_expression(node, source, left, resolver)
-                || matches_expression(node, source, right, resolver)
+            let mut matches = match_expression(node, source, left, resolver, state);
+            matches.extend(match_expression(node, source, right, resolver, state));
+            matches
         }
-        Expression::Not(expression) => !matches_expression(node, source, expression, resolver),
+        Expression::Not(expression) => {
+            if match_expression(node, source, expression, resolver, state).is_empty() {
+                vec![state.clone()]
+            } else {
+                Vec::new()
+            }
+        }
     }
 }
 
-fn matches_descendant_chain(
+fn match_descendant_chain(
     node: Node,
     source: &[u8],
     patterns: &[NodePattern],
     resolver: &NameResolver,
-) -> bool {
+    state: &MatchState,
+) -> Vec<MatchState> {
     let Some((pattern, remaining)) = patterns.split_first() else {
-        return true;
+        return vec![state.clone()];
     };
 
     let mut cursor = node.walk();
-    node.named_children(&mut cursor).any(|child| {
-        (matches_node(child, source, pattern, resolver)
-            && matches_descendant_chain(child, source, remaining, resolver))
-            || matches_descendant_chain(child, source, patterns, resolver)
-    })
+    let mut matches = Vec::new();
+    for child in node.named_children(&mut cursor) {
+        for state in match_node(child, source, pattern, resolver, state) {
+            matches.extend(match_descendant_chain(
+                child, source, remaining, resolver, &state,
+            ));
+        }
+        matches.extend(match_descendant_chain(
+            child, source, patterns, resolver, state,
+        ));
+    }
+    matches
 }
 
-fn matches_relation(
+fn match_relation(
     node: Node,
     source: &[u8],
     relationship: Relationship,
     pattern: &NodePattern,
     resolver: &NameResolver,
-) -> bool {
+    state: &MatchState,
+) -> Vec<MatchState> {
     if matches!(pattern.kind, PatternKind::Argument(_)) {
-        return matches_argument(node, source, pattern);
+        return match_argument(node, source, pattern, state);
     }
 
     match relationship {
         Relationship::Child => {
             let mut cursor = node.walk();
             node.named_children(&mut cursor)
-                .any(|child| matches_node(child, source, pattern, resolver))
+                .flat_map(|child| match_node(child, source, pattern, resolver, state))
+                .collect()
         }
-        Relationship::Descendant => contains_descendant(node, source, pattern, resolver),
+        Relationship::Descendant => contains_descendant(node, source, pattern, resolver, state),
         Relationship::Ancestor => {
             let mut parent = node.parent();
+            let mut matches = Vec::new();
             while let Some(node) = parent {
-                if matches_node(node, source, pattern, resolver) {
-                    return true;
-                }
+                matches.extend(match_node(node, source, pattern, resolver, state));
                 parent = node.parent();
             }
-            false
+            matches
         }
     }
 }
@@ -93,15 +139,24 @@ fn contains_descendant(
     source: &[u8],
     pattern: &NodePattern,
     resolver: &NameResolver,
-) -> bool {
+    state: &MatchState,
+) -> Vec<MatchState> {
     let mut cursor = node.walk();
-    node.named_children(&mut cursor).any(|child| {
-        matches_node(child, source, pattern, resolver)
-            || contains_descendant(child, source, pattern, resolver)
-    })
+    let mut matches = Vec::new();
+    for child in node.named_children(&mut cursor) {
+        matches.extend(match_node(child, source, pattern, resolver, state));
+        matches.extend(contains_descendant(child, source, pattern, resolver, state));
+    }
+    matches
 }
 
-fn matches_node(node: Node, source: &[u8], pattern: &NodePattern, resolver: &NameResolver) -> bool {
+fn match_node(
+    node: Node,
+    source: &[u8],
+    pattern: &NodePattern,
+    resolver: &NameResolver,
+    state: &MatchState,
+) -> Vec<MatchState> {
     let target = match &pattern.kind {
         PatternKind::Call if node.kind() == "call" => node.child_by_field_name("function"),
         PatternKind::Class if node.kind() == "class_definition" => node.child_by_field_name("name"),
@@ -111,20 +166,21 @@ fn matches_node(node: Node, source: &[u8], pattern: &NodePattern, resolver: &Nam
         PatternKind::Import
             if matches!(node.kind(), "import_statement" | "import_from_statement") =>
         {
-            return import_matches(node, source, &pattern.value);
+            return match_import(node, source, &pattern.value, state);
         }
         _ => None,
     };
 
-    target
-        .and_then(|target| target.utf8_text(source).ok())
-        .is_some_and(|actual| {
-            if matches!(pattern.kind, PatternKind::Call) {
-                call_value_matches(node, resolver, &pattern.value, actual)
-            } else {
-                value_matches(&pattern.value, actual)
-            }
-        })
+    let Some(actual) = target.and_then(|target| target.utf8_text(source).ok()) else {
+        return Vec::new();
+    };
+    if matches!(pattern.kind, PatternKind::Call) {
+        call_value_matches(node, resolver, &pattern.value, actual, state)
+    } else {
+        match_value(&pattern.value, actual, state)
+            .into_iter()
+            .collect()
+    }
 }
 
 fn call_value_matches(
@@ -132,34 +188,49 @@ fn call_value_matches(
     resolver: &NameResolver,
     pattern: &ValuePattern,
     actual: &str,
-) -> bool {
+    state: &MatchState,
+) -> Vec<MatchState> {
     match resolver.resolve(node, actual) {
         NameResolution::Canonical(canonical) => {
-            value_matches(pattern, actual) || value_matches(pattern, &canonical)
+            let mut matches: Vec<_> = match_value(pattern, actual, state).into_iter().collect();
+            matches.extend(match_value(pattern, &canonical, state));
+            matches
         }
-        NameResolution::ShadowedImport if matches!(pattern, ValuePattern::Exact(_)) => false,
+        NameResolution::ShadowedImport if matches!(pattern, ValuePattern::Exact(_)) => Vec::new(),
         NameResolution::ShadowedImport | NameResolution::Unresolved => {
-            value_matches(pattern, actual)
+            match_value(pattern, actual, state).into_iter().collect()
         }
     }
 }
 
-fn import_matches(node: Node, source: &[u8], pattern: &ValuePattern) -> bool {
+fn match_import(
+    node: Node,
+    source: &[u8],
+    pattern: &ValuePattern,
+    state: &MatchState,
+) -> Vec<MatchState> {
     let mut cursor = node.walk();
-    node.named_children(&mut cursor).any(|child| {
-        child
-            .utf8_text(source)
-            .is_ok_and(|actual| value_matches(pattern, actual))
-            || import_matches(child, source, pattern)
-    })
+    let mut matches = Vec::new();
+    for child in node.named_children(&mut cursor) {
+        if let Ok(actual) = child.utf8_text(source) {
+            matches.extend(match_value(pattern, actual, state));
+        }
+        matches.extend(match_import(child, source, pattern, state));
+    }
+    matches
 }
 
-fn matches_argument(node: Node, source: &[u8], pattern: &NodePattern) -> bool {
+fn match_argument(
+    node: Node,
+    source: &[u8],
+    pattern: &NodePattern,
+    state: &MatchState,
+) -> Vec<MatchState> {
     let PatternKind::Argument(key) = &pattern.kind else {
-        return false;
+        return Vec::new();
     };
     let Some(arguments) = node.child_by_field_name("arguments") else {
-        return false;
+        return Vec::new();
     };
 
     let mut cursor = arguments.walk();
@@ -168,22 +239,27 @@ fn matches_argument(node: Node, source: &[u8], pattern: &NodePattern) -> bool {
         ArgumentKey::Any => arguments
             .into_iter()
             .filter_map(argument_value)
-            .any(|argument| node_value_matches(argument, source, &pattern.value)),
+            .flat_map(|argument| node_value_matches(argument, source, &pattern.value, state))
+            .collect(),
         ArgumentKey::Position(position) => arguments
             .into_iter()
             .filter(|argument| argument.kind() != "keyword_argument")
             .nth(*position)
-            .is_some_and(|argument| node_value_matches(argument, source, &pattern.value)),
-        ArgumentKey::Keyword(expected) => arguments.into_iter().any(|argument| {
-            argument.kind() == "keyword_argument"
-                && argument
-                    .child_by_field_name("name")
-                    .and_then(|name| name.utf8_text(source).ok())
-                    .is_some_and(|name| name == expected)
-                && argument
-                    .child_by_field_name("value")
-                    .is_some_and(|value| node_value_matches(value, source, &pattern.value))
-        }),
+            .map(|argument| node_value_matches(argument, source, &pattern.value, state))
+            .unwrap_or_default(),
+        ArgumentKey::Keyword(expected) => arguments
+            .into_iter()
+            .filter_map(|argument| {
+                (argument.kind() == "keyword_argument"
+                    && argument
+                        .child_by_field_name("name")
+                        .and_then(|name| name.utf8_text(source).ok())
+                        .is_some_and(|name| name == expected))
+                .then(|| argument.child_by_field_name("value"))
+                .flatten()
+            })
+            .flat_map(|value| node_value_matches(value, source, &pattern.value, state))
+            .collect(),
     }
 }
 
@@ -195,26 +271,35 @@ fn argument_value(argument: Node) -> Option<Node> {
     }
 }
 
-fn node_value_matches(node: Node, source: &[u8], pattern: &ValuePattern) -> bool {
+fn node_value_matches(
+    node: Node,
+    source: &[u8],
+    pattern: &ValuePattern,
+    state: &MatchState,
+) -> Vec<MatchState> {
     node.utf8_text(source)
-        .is_ok_and(|actual| value_matches(pattern, actual))
+        .ok()
+        .and_then(|actual| match_value(pattern, actual, state))
+        .into_iter()
+        .collect()
 }
 
-fn value_matches(pattern: &ValuePattern, actual: &str) -> bool {
+fn match_value(pattern: &ValuePattern, actual: &str, state: &MatchState) -> Option<MatchState> {
     match pattern {
-        ValuePattern::Any => true,
-        ValuePattern::Exact(expected) => {
-            actual == expected
-                || strip_string_quotes(actual).is_some_and(|actual| actual == expected)
-        }
-        ValuePattern::Contains(expected) => actual.contains(expected),
-        ValuePattern::StartsWith(expected) => actual.starts_with(expected),
-        ValuePattern::EndsWith(expected) => actual.ends_with(expected),
-        ValuePattern::Regex(expression) => expression.is_match(actual),
+        ValuePattern::Any => Some(state.clone()),
+        ValuePattern::Exact(expected) => (actual == expected
+            || strip_string_quotes(actual).is_some_and(|actual| actual == expected))
+        .then(|| state.clone()),
+        ValuePattern::Contains(expected) => actual.contains(expected).then(|| state.clone()),
+        ValuePattern::StartsWith(expected) => actual.starts_with(expected).then(|| state.clone()),
+        ValuePattern::EndsWith(expected) => actual.ends_with(expected).then(|| state.clone()),
+        ValuePattern::Regex(expression) => expression.is_match(actual).then(|| state.clone()),
         ValuePattern::Numeric(comparison, expected) => actual
             .replace('_', "")
             .parse::<f64>()
-            .is_ok_and(|actual| compare(actual, *comparison, *expected)),
+            .is_ok_and(|actual| compare(actual, *comparison, *expected))
+            .then(|| state.clone()),
+        ValuePattern::Capture(name) => state.bind_capture(name, actual),
     }
 }
 

@@ -6,7 +6,8 @@ revision, optionally hashes a local distribution artifact, and prints JSON.
 The module also contains a few believable legacy shortcuts for
 ``pyastq.example.toml`` to find. They are intentionally retained so the file can
 demonstrate structural matching, import alias resolution, descendant chains,
-argument predicates, negation, and targeted suppressions.
+argument predicates, negation, query variables, captures, and targeted
+suppressions.
 """
 
 from __future__ import annotations
@@ -101,6 +102,21 @@ def legacy_artifact_id(path: Path) -> str:
 def suppressed_partner_artifact_id(path: Path) -> str:
     """Not reported: a targeted suppression documents a required exception."""
     return hashlib.md5(path.read_bytes()).hexdigest()  # pyastq: ignore weak-release-digest
+
+
+def versions_match(current: str, expected: str) -> bool:
+    """Return whether two normalized version strings are equal."""
+    return current.strip().lower() == expected.strip().lower()
+
+
+def compare_release_version(current_version: str, expected_version: str) -> bool:
+    """Clean: compare the current release version with the expected version."""
+    return versions_match(current_version, expected_version)
+
+
+def compare_legacy_version(current_version: str) -> bool:
+    """Caught: the same value appears twice and satisfies a repeated capture."""
+    return versions_match(current_version, current_version)
 
 
 def parse_labels(values: list[str]) -> dict[str, str]:
