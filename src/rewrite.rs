@@ -7,17 +7,12 @@ use crate::query::{MatchCaptures, QueryVariables, is_variable_name};
 use crate::report::Finding;
 use crate::search::{python_parser, validate_python_with_parser};
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub enum ChangeSafety {
+    #[default]
     Safe,
     Unsafe,
-}
-
-impl Default for ChangeSafety {
-    fn default() -> Self {
-        Self::Safe
-    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
